@@ -9,6 +9,8 @@ export interface Product {
   minQuantity: number;
   category: string;
   expireDate?: string;
+  unitType: UnitType;
+  unit: string;
   createdAt: string;
 }
 
@@ -63,6 +65,8 @@ export interface CartItem {
   buyPrice: number;
   quantity: number;
   maxQuantity: number;
+  unit: string;
+  unitType: UnitType;
 }
 
 export interface AccountEntry {
@@ -81,6 +85,11 @@ export interface AppSettings {
   theme: string;
   language: string;
 }
+
+export type UnitType = 'piece' | 'weight';
+
+export const WEIGHT_UNITS = ['جرام', 'كيلو', 'مل', 'لتر', 'طن'];
+export const PIECE_UNITS = ['قطعة', 'علبة', 'كرتون', 'كيس', 'حبة'];
 
 export type UserRole = 'admin' | 'cashier';
 

@@ -1,5 +1,5 @@
 // Powered by OnSpace.AI
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, FlatList,
   TextInput, Modal, KeyboardAvoidingView, Platform
@@ -11,13 +11,12 @@ import { useAlert } from '@/template';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import StyledButton from '@/components/ui/StyledButton';
 import BarcodeScanner from '@/components/ui/BarcodeScanner';
-import { CartItem, InvoiceType } from '@/types';
+import { CartItem, InvoiceType, Product } from '@/types';
 import { formatCurrency } from '@/utils/format';
 
 export default function SalesScreen() {
   const insets = useSafeAreaInsets();
-  const appCtx = useApp();
-  const { products, customers, saveInvoice, nextInvoiceNumber, settings, syncing, addProduct } = appCtx;
+  const { products, customers, saveInvoice, nextInvoiceNumber, settings, syncing, addProduct } = useApp();
   const { showAlert } = useAlert();
 
   const [invoiceType, setInvoiceType] = useState<InvoiceType>('بيع');
@@ -32,6 +31,11 @@ export default function SalesScreen() {
   const [showScanner, setShowScanner] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  // Weight product quantity modal
+  const [showWeightModal, setShowWeightModal] = useState(false);
+  const [weightProduct, setWeightProduct] = useState<Product | null>(null);
+  const [weightInput, setWeightInput] = useState('');
+
   // New product from barcode scan (for purchase invoices)
   const [showNewProductModal, setShowNewProductModal] = useState(false);
   const [scannedBarcode, setScannedBarcode] = useState('');
@@ -45,8 +49,11 @@ export default function SalesScreen() {
   const filteredProducts = useMemo(() =>
     products.filter(p => {
       const matchSearch = p.name.includes(search) || (p.barcode && p.barcode.includes(search));
-      return matchSearch && (invoiceType === 'شراء' ? true : p.quantity > 0);
-    }).slice(0, 30),
+      if (!matchSearch) return false;
+      // For sale invoices, piece products need stock; weight products are always available
+      if (invoiceType === 'بيع' && p.unitType === 'piece' && p.quantity <= 0) return false;
+      return true;
+    }).slice(0, 50),
     [products, search, invoiceType]
   );
 
@@ -58,7 +65,16 @@ export default function SalesScreen() {
   const total = useMemo(() => cart.reduce((s, i) => s + i.price * i.quantity, 0), [cart]);
   const selectedCustomer = customers.find(c => c.id === selectedCustomerId);
 
-  function addToCart(product: typeof products[0]) {
+  // ── Add product to cart ────────────────────────────────────────────────────
+  const addToCart = useCallback((product: Product) => {
+    if (product.unitType === 'weight') {
+      // For weight products, open the weight input modal
+      setWeightProduct(product);
+      setWeightInput('');
+      setShowWeightModal(true);
+      return;
+    }
+    // Piece product
     setCart(prev => {
       const existing = prev.find(i => i.productId === product.id);
       if (existing) {
@@ -75,8 +91,43 @@ export default function SalesScreen() {
         buyPrice: product.buyPrice,
         quantity: 1,
         maxQuantity: invoiceType === 'شراء' ? 9999 : product.quantity,
+        unit: product.unit,
+        unitType: product.unitType,
       }];
     });
+  }, [invoiceType, showAlert]);
+
+  // Confirm weight input
+  function confirmWeightAdd() {
+    if (!weightProduct) return;
+    const qty = parseFloat(weightInput.replace(',', '.'));
+    if (isNaN(qty) || qty <= 0) {
+      showAlert('تنبيه', 'أدخل كمية صحيحة');
+      return;
+    }
+    const unitPrice = invoiceType === 'شراء' ? weightProduct.buyPrice : weightProduct.sellPrice;
+    setCart(prev => {
+      const existing = prev.find(i => i.productId === weightProduct.id);
+      if (existing) {
+        return prev.map(i =>
+          i.productId === weightProduct.id
+            ? { ...i, quantity: parseFloat((i.quantity + qty).toFixed(4)) }
+            : i
+        );
+      }
+      return [...prev, {
+        productId: weightProduct.id,
+        productName: weightProduct.name,
+        price: unitPrice,
+        buyPrice: weightProduct.buyPrice,
+        quantity: qty,
+        maxQuantity: 99999,
+        unit: weightProduct.unit,
+        unitType: weightProduct.unitType,
+      }];
+    });
+    setShowWeightModal(false);
+    setWeightProduct(null);
   }
 
   function handleBarcodeScan(barcode: string) {
@@ -85,7 +136,6 @@ export default function SalesScreen() {
     if (product) {
       addToCart(product);
     } else if (invoiceType === 'شراء') {
-      // Purchase invoice: offer to add a new product with this barcode
       setScannedBarcode(barcode);
       setNewProductName('');
       setNewProductBuyPrice('');
@@ -99,8 +149,7 @@ export default function SalesScreen() {
   async function handleAddNewProductFromScan() {
     if (!newProductName.trim()) { showAlert('تنبيه', 'اسم المنتج مطلوب'); return; }
     if (!newProductBuyPrice || isNaN(Number(newProductBuyPrice))) {
-      showAlert('تنبيه', 'سعر الشراء غير صحيح');
-      return;
+      showAlert('تنبيه', 'سعر الشراء غير صحيح'); return;
     }
     setSavingNewProduct(true);
     try {
@@ -112,6 +161,8 @@ export default function SalesScreen() {
         quantity: 0,
         minQuantity: 10,
         category: 'أخرى',
+        unitType: 'piece',
+        unit: 'قطعة',
       });
       setShowNewProductModal(false);
       showAlert('تم', 'تم إضافة المنتج. أضفه إلى الفاتورة من قائمة المنتجات.');
@@ -126,15 +177,25 @@ export default function SalesScreen() {
     setCart(prev =>
       prev.map(i => {
         if (i.productId !== productId) return i;
-        const newQty = i.quantity + delta;
+        const newQty = parseFloat((i.quantity + delta).toFixed(4));
         if (newQty <= 0) return i;
-        if (invoiceType === 'بيع' && newQty > i.maxQuantity) {
+        if (i.unitType === 'piece' && invoiceType === 'بيع' && newQty > i.maxQuantity) {
           showAlert('تنبيه', `الكمية المتاحة: ${i.maxQuantity}`);
           return i;
         }
         return { ...i, quantity: newQty };
       })
     );
+  }
+
+  function editWeightItem(item: CartItem) {
+    const prod = products.find(p => p.id === item.productId);
+    if (!prod) return;
+    setWeightProduct(prod);
+    setWeightInput(item.quantity.toString());
+    setShowWeightModal(true);
+    // When editing, first remove the item
+    setCart(prev => prev.filter(i => i.productId !== item.productId));
   }
 
   function removeFromCart(productId: string) {
@@ -144,8 +205,7 @@ export default function SalesScreen() {
   async function handleCheckout() {
     if (cart.length === 0) { showAlert('تنبيه', 'السلة فارغة'); return; }
     if (paymentType === 'آجل' && !selectedCustomerId) {
-      showAlert('تنبيه', 'يجب اختيار زبون للبيع الآجل');
-      return;
+      showAlert('تنبيه', 'يجب اختيار زبون للبيع الآجل'); return;
     }
     const num = nextInvoiceNumber;
     setSaving(true);
@@ -184,6 +244,13 @@ export default function SalesScreen() {
     setCart([]);
     setPaymentType('نقداً');
     setSelectedCustomerId(undefined);
+  }
+
+  function formatQty(qty: number, unit: string, unitType: string) {
+    if (unitType === 'weight') {
+      return `${qty % 1 === 0 ? qty : qty.toFixed(2)} ${unit}`;
+    }
+    return `${qty}`;
   }
 
   return (
@@ -234,27 +301,48 @@ export default function SalesScreen() {
             />
           </View>
           {invoiceType === 'شراء' ? (
-            <View style={styles.purchaseTip}>
-              <MaterialIcons name="info-outline" size={13} color={Colors.info} />
-              <Text style={styles.purchaseTipText}>مسح باركود غير موجود سيضيف منتجاً جديداً</Text>
+            <View style={styles.tipRow}>
+              <MaterialIcons name="info-outline" size={12} color={Colors.info} />
+              <Text style={styles.tipText}>مسح باركود غير موجود يضيف منتجاً جديداً</Text>
             </View>
           ) : null}
           <FlatList
             data={filteredProducts}
             keyExtractor={p => p.id}
             showsVerticalScrollIndicator={false}
+            numColumns={1}
             renderItem={({ item }) => (
               <Pressable
                 style={({ pressed }) => [styles.productCard, { opacity: pressed ? 0.8 : 1 }]}
                 onPress={() => addToCart(item)}
               >
+                {/* Unit type badge */}
+                <View style={[
+                  styles.unitBadge,
+                  { backgroundColor: item.unitType === 'weight' ? Colors.warning + '22' : Colors.primary + '22' }
+                ]}>
+                  <MaterialIcons
+                    name={item.unitType === 'weight' ? 'scale' : 'inventory-2'}
+                    size={10}
+                    color={item.unitType === 'weight' ? Colors.warning : Colors.primary}
+                  />
+                  <Text style={[styles.unitBadgeText, { color: item.unitType === 'weight' ? Colors.warning : Colors.primary }]}>
+                    {item.unitType === 'weight' ? `/${item.unit}` : item.unit}
+                  </Text>
+                </View>
                 <Text style={styles.productPrice}>
                   {formatCurrency(invoiceType === 'شراء' ? item.buyPrice : item.sellPrice, currency)}
                 </Text>
                 <Text style={styles.productName} numberOfLines={2}>{item.name}</Text>
-                <View style={styles.qtyBadge}>
-                  <Text style={styles.qtyBadgeText}>{item.quantity}</Text>
-                </View>
+                {item.unitType === 'piece' ? (
+                  <View style={styles.qtyBadge}>
+                    <Text style={styles.qtyBadgeText}>{item.quantity}</Text>
+                  </View>
+                ) : (
+                  <View style={[styles.qtyBadge, { backgroundColor: Colors.warning + '22' }]}>
+                    <MaterialIcons name="scale" size={9} color={Colors.warning} />
+                  </View>
+                )}
               </Pressable>
             )}
             ListEmptyComponent={
@@ -281,15 +369,25 @@ export default function SalesScreen() {
                   <Pressable onPress={() => removeFromCart(item.productId)} hitSlop={8}>
                     <MaterialIcons name="close" size={16} color={Colors.danger} />
                   </Pressable>
-                  <View style={styles.cartQty}>
-                    <Pressable onPress={() => updateQty(item.productId, 1)} style={styles.qtyBtn} hitSlop={4}>
-                      <MaterialIcons name="add" size={14} color={Colors.primary} />
+                  {item.unitType === 'weight' ? (
+                    // Weight item: tap to edit quantity
+                    <Pressable style={styles.weightQtyBtn} onPress={() => editWeightItem(item)}>
+                      <MaterialIcons name="edit" size={11} color={Colors.warning} />
+                      <Text style={styles.weightQtyText}>
+                        {item.quantity % 1 === 0 ? item.quantity : item.quantity.toFixed(2)}{item.unit}
+                      </Text>
                     </Pressable>
-                    <Text style={styles.qtyNum}>{item.quantity}</Text>
-                    <Pressable onPress={() => updateQty(item.productId, -1)} style={styles.qtyBtn} hitSlop={4}>
-                      <MaterialIcons name="remove" size={14} color={Colors.danger} />
-                    </Pressable>
-                  </View>
+                  ) : (
+                    <View style={styles.cartQty}>
+                      <Pressable onPress={() => updateQty(item.productId, 1)} style={styles.qtyBtn} hitSlop={4}>
+                        <MaterialIcons name="add" size={14} color={Colors.primary} />
+                      </Pressable>
+                      <Text style={styles.qtyNum}>{item.quantity}</Text>
+                      <Pressable onPress={() => updateQty(item.productId, -1)} style={styles.qtyBtn} hitSlop={4}>
+                        <MaterialIcons name="remove" size={14} color={Colors.danger} />
+                      </Pressable>
+                    </View>
+                  )}
                   <View style={styles.cartInfo}>
                     <Text style={styles.cartItemName} numberOfLines={1}>{item.productName}</Text>
                     <Text style={styles.cartItemPrice}>{formatCurrency(item.price * item.quantity, currency)}</Text>
@@ -341,6 +439,76 @@ export default function SalesScreen() {
 
       <BarcodeScanner visible={showScanner} onClose={() => setShowScanner(false)} onScan={handleBarcodeScan} />
 
+      {/* ── Weight quantity input modal ── */}
+      <Modal visible={showWeightModal} transparent animationType="fade">
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+          <View style={styles.weightModalCard}>
+            <View style={styles.weightModalHeader}>
+              <Pressable onPress={() => { setShowWeightModal(false); setWeightProduct(null); }} hitSlop={8}>
+                <MaterialIcons name="close" size={22} color={Colors.textSecondary} />
+              </Pressable>
+              <View style={styles.weightModalIcon}>
+                <MaterialIcons name="scale" size={24} color={Colors.warning} />
+              </View>
+            </View>
+
+            <Text style={styles.weightModalTitle}>{weightProduct?.name}</Text>
+            <Text style={styles.weightModalSub}>
+              السعر: {formatCurrency(invoiceType === 'شراء' ? (weightProduct?.buyPrice || 0) : (weightProduct?.sellPrice || 0), currency)} / {weightProduct?.unit}
+            </Text>
+
+            <View style={styles.weightInputWrap}>
+              <Text style={styles.weightInputUnit}>{weightProduct?.unit}</Text>
+              <TextInput
+                style={styles.weightInput}
+                value={weightInput}
+                onChangeText={setWeightInput}
+                keyboardType="decimal-pad"
+                placeholder="0"
+                placeholderTextColor={Colors.textMuted}
+                textAlign="center"
+                autoFocus
+                selectTextOnFocus
+              />
+            </View>
+
+            {weightInput && !isNaN(parseFloat(weightInput)) && parseFloat(weightInput) > 0 ? (
+              <View style={styles.weightCalc}>
+                <Text style={styles.weightCalcText}>
+                  {parseFloat(weightInput).toFixed(2)} {weightProduct?.unit} × {formatCurrency(invoiceType === 'شراء' ? (weightProduct?.buyPrice || 0) : (weightProduct?.sellPrice || 0), currency)}
+                </Text>
+                <Text style={styles.weightCalcTotal}>
+                  = {formatCurrency(
+                    parseFloat(weightInput) * (invoiceType === 'شراء' ? (weightProduct?.buyPrice || 0) : (weightProduct?.sellPrice || 0)),
+                    currency
+                  )}
+                </Text>
+              </View>
+            ) : null}
+
+            {/* Quick presets */}
+            <View style={styles.presets}>
+              {['100', '250', '500', '1000'].map(p => (
+                <Pressable
+                  key={p}
+                  style={styles.presetBtn}
+                  onPress={() => setWeightInput(p)}
+                >
+                  <Text style={styles.presetText}>{p}</Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <StyledButton
+              label="إضافة إلى السلة"
+              onPress={confirmWeightAdd}
+              fullWidth
+              style={{ marginTop: Spacing.sm }}
+            />
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
       {/* Customer Modal */}
       <Modal visible={showCustomerModal} transparent animationType="slide">
         <View style={styles.modalOverlay}>
@@ -383,7 +551,7 @@ export default function SalesScreen() {
         </View>
       </Modal>
 
-      {/* New Product from Barcode Modal (Purchase only) */}
+      {/* New Product from Barcode Modal */}
       <Modal visible={showNewProductModal} transparent animationType="slide">
         <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <View style={styles.modalSheet}>
@@ -486,20 +654,26 @@ const styles = StyleSheet.create({
   searchIcon: { marginLeft: Spacing.xs },
   scanIconBtn: { padding: Spacing.xs, marginLeft: 2 },
   searchInput: { flex: 1, color: Colors.text, fontSize: FontSize.sm, paddingVertical: Spacing.sm },
-  purchaseTip: {
+  tipRow: {
     flexDirection: 'row-reverse', alignItems: 'center', gap: 4,
     paddingHorizontal: Spacing.sm, paddingBottom: 4,
   },
-  purchaseTipText: { color: Colors.info, fontSize: 10 },
+  tipText: { color: Colors.info, fontSize: 10 },
   productCard: {
     backgroundColor: Colors.card, borderRadius: Radius.md, padding: Spacing.sm,
-    margin: Spacing.xs, borderWidth: 1, borderColor: Colors.border, minHeight: 80,
+    margin: Spacing.xs, borderWidth: 1, borderColor: Colors.border, minHeight: 76,
     alignItems: 'flex-end', position: 'relative',
   },
+  unitBadge: {
+    position: 'absolute', top: 4, left: 4,
+    flexDirection: 'row-reverse', alignItems: 'center', gap: 2,
+    borderRadius: Radius.sm, paddingHorizontal: 5, paddingVertical: 2,
+  },
+  unitBadgeText: { fontSize: 9, fontWeight: FontWeight.semiBold },
   productName: { color: Colors.text, fontSize: FontSize.xs + 1, fontWeight: FontWeight.medium, textAlign: 'right', marginBottom: 4 },
   productPrice: { color: Colors.primary, fontSize: FontSize.sm, fontWeight: FontWeight.bold },
-  qtyBadge: { position: 'absolute', top: 4, left: 4, backgroundColor: Colors.surface, borderRadius: Radius.sm, paddingHorizontal: 6, paddingVertical: 2 },
-  qtyBadgeText: { color: Colors.textSecondary, fontSize: 10 },
+  qtyBadge: { position: 'absolute', top: 4, right: 4, backgroundColor: Colors.surface, borderRadius: Radius.sm, paddingHorizontal: 5, paddingVertical: 2 },
+  qtyBadgeText: { color: Colors.textSecondary, fontSize: 9 },
   emptyProducts: { alignItems: 'center', padding: Spacing.xl, gap: Spacing.sm },
   emptyText: { color: Colors.textMuted, fontSize: FontSize.sm, textAlign: 'center' },
   cartPanel: { flex: 1, flexDirection: 'column' },
@@ -513,9 +687,16 @@ const styles = StyleSheet.create({
   cartInfo: { flex: 1, alignItems: 'flex-end' },
   cartItemName: { color: Colors.text, fontSize: FontSize.xs + 1, textAlign: 'right' },
   cartItemPrice: { color: Colors.primary, fontSize: FontSize.sm, fontWeight: FontWeight.semiBold },
-  cartQty: { flexDirection: 'row-reverse', alignItems: 'center', gap: 4 },
+  cartQty: { flexDirection: 'row-reverse', alignItems: 'center', gap: 2 },
   qtyBtn: { backgroundColor: Colors.surface, borderRadius: 4, padding: 4, borderWidth: 1, borderColor: Colors.border },
-  qtyNum: { color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.bold, minWidth: 24, textAlign: 'center' },
+  qtyNum: { color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.bold, minWidth: 22, textAlign: 'center' },
+  weightQtyBtn: {
+    flexDirection: 'row-reverse', alignItems: 'center', gap: 2,
+    backgroundColor: Colors.warning + '22', borderRadius: Radius.sm,
+    paddingHorizontal: 6, paddingVertical: 4,
+    borderWidth: 1, borderColor: Colors.warning + '44',
+  },
+  weightQtyText: { color: Colors.warning, fontSize: 11, fontWeight: FontWeight.semiBold },
   cartFooter: {
     padding: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border,
     backgroundColor: Colors.surface, gap: Spacing.sm,
@@ -535,6 +716,48 @@ const styles = StyleSheet.create({
   },
   customerPickerText: { color: Colors.text, fontSize: FontSize.sm, flex: 1, textAlign: 'right' },
   customerPickerPlaceholder: { color: Colors.textMuted },
+
+  // Weight modal
+  weightModalCard: {
+    backgroundColor: Colors.surface, borderRadius: Radius.xl, margin: Spacing.lg,
+    padding: Spacing.xl, borderWidth: 1, borderColor: Colors.border,
+  },
+  weightModalHeader: { flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.sm },
+  weightModalIcon: {
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: Colors.warning + '22', alignItems: 'center', justifyContent: 'center',
+  },
+  weightModalTitle: { color: Colors.text, fontSize: FontSize.xl, fontWeight: FontWeight.bold, textAlign: 'right', marginBottom: 4 },
+  weightModalSub: { color: Colors.textSecondary, fontSize: FontSize.sm, textAlign: 'right', marginBottom: Spacing.lg },
+  weightInputWrap: {
+    flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center',
+    backgroundColor: Colors.background, borderRadius: Radius.lg,
+    borderWidth: 2, borderColor: Colors.warning, marginBottom: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+  },
+  weightInput: {
+    flex: 1, fontSize: 40, fontWeight: FontWeight.bold, color: Colors.text,
+    paddingVertical: Spacing.md, textAlign: 'center',
+  },
+  weightInputUnit: {
+    color: Colors.warning, fontSize: FontSize.lg, fontWeight: FontWeight.semiBold,
+    paddingRight: Spacing.sm,
+  },
+  weightCalc: {
+    flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center',
+    backgroundColor: Colors.background, borderRadius: Radius.md, padding: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  weightCalcText: { color: Colors.textSecondary, fontSize: FontSize.sm },
+  weightCalcTotal: { color: Colors.primary, fontSize: FontSize.lg, fontWeight: FontWeight.bold },
+  presets: { flexDirection: 'row-reverse', gap: Spacing.sm, marginBottom: Spacing.sm },
+  presetBtn: {
+    flex: 1, alignItems: 'center', paddingVertical: Spacing.sm,
+    backgroundColor: Colors.card, borderRadius: Radius.md,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  presetText: { color: Colors.textSecondary, fontSize: FontSize.sm, fontWeight: FontWeight.medium },
+
   modalOverlay: { flex: 1, backgroundColor: Colors.overlay, justifyContent: 'flex-end' },
   modalSheet: { backgroundColor: Colors.surface, borderTopLeftRadius: Radius.xl, borderTopRightRadius: Radius.xl, maxHeight: '80%', padding: Spacing.lg },
   modalHeader: { flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.md },
@@ -548,7 +771,6 @@ const styles = StyleSheet.create({
   customerName: { color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.medium },
   customerPhone: { color: Colors.textSecondary, fontSize: FontSize.xs },
   customerBalance: { fontSize: FontSize.sm, fontWeight: FontWeight.semiBold },
-  // New product from scan styles
   barcodeTag: {
     flexDirection: 'row-reverse', alignItems: 'center', gap: 6,
     backgroundColor: Colors.info + '11', borderRadius: Radius.sm,

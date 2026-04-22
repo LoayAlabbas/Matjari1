@@ -145,12 +145,14 @@ function mapProduct(r: any): Product {
     buyPrice: Number(r.buy_price), sellPrice: Number(r.sell_price),
     quantity: r.quantity, minQuantity: r.min_quantity,
     category: r.category, expireDate: r.expire_date,
+    unitType: r.unit_type || 'piece',
+    unit: r.unit || 'قطعة',
     createdAt: r.created_at,
   };
 }
 
 function toDbProduct(p: Omit<Product, 'id' | 'createdAt'>) {
-  return { name: p.name, barcode: p.barcode, buy_price: p.buyPrice, sell_price: p.sellPrice, quantity: p.quantity, min_quantity: p.minQuantity, category: p.category, expire_date: p.expireDate };
+  return { name: p.name, barcode: p.barcode, buy_price: p.buyPrice, sell_price: p.sellPrice, quantity: p.quantity, min_quantity: p.minQuantity, category: p.category, expire_date: p.expireDate, unit_type: p.unitType || 'piece', unit: p.unit || 'قطعة' };
 }
 
 function toDbProductPartial(p: Partial<Product>) {
@@ -163,6 +165,8 @@ function toDbProductPartial(p: Partial<Product>) {
   if (p.minQuantity !== undefined) r.min_quantity = p.minQuantity;
   if (p.category !== undefined) r.category = p.category;
   if (p.expireDate !== undefined) r.expire_date = p.expireDate;
+  if (p.unitType !== undefined) r.unit_type = p.unitType;
+  if (p.unit !== undefined) r.unit = p.unit;
   return r;
 }
 
