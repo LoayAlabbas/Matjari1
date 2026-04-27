@@ -5,12 +5,14 @@ export interface Product {
   barcode?: string;
   buyPrice: number;
   sellPrice: number;
+  wholesalePrice: number;
   quantity: number;
   minQuantity: number;
   category: string;
   expireDate?: string;
   unitType: UnitType;
   unit: string;
+  imageUrl?: string;
   createdAt: string;
 }
 
@@ -24,8 +26,9 @@ export interface Customer {
   createdAt: string;
 }
 
-export type InvoiceType = 'بيع' | 'شراء';
-export type PaymentType = 'نقداً' | 'آجل';
+export type InvoiceType = 'بيع' | 'شراء' | 'مرتجع';
+export type PaymentType = 'نقداً' | 'آجل' | 'بطاقة' | 'تحويل';
+export type DiscountType = 'percent' | 'fixed';
 
 export interface Invoice {
   id: string;
@@ -33,10 +36,19 @@ export interface Invoice {
   date: string;
   customerId?: string;
   customerName?: string;
+  subtotal: number;
+  discountType?: DiscountType;
+  discountValue: number;
+  discountAmount: number;
+  taxRate: number;
+  taxAmount: number;
   total: number;
   paymentType: PaymentType;
+  secondPaymentMethod?: PaymentType;
+  secondPaymentAmount: number;
   invoiceType: InvoiceType;
   notes?: string;
+  shiftId?: string;
   createdAt: string;
 }
 
@@ -84,12 +96,72 @@ export interface AppSettings {
   currency: string;
   theme: string;
   language: string;
+  taxRate: number;
+  taxEnabled: boolean;
+  shiftsEnabled: boolean;
+}
+
+export interface Expense {
+  id: string;
+  description: string;
+  amount: number;
+  category: string;
+  date: string;
+  notes?: string;
+  createdAt: string;
+}
+
+export interface Supplier {
+  id: string;
+  name: string;
+  phone: string;
+  address?: string;
+  balance: number;
+  notes?: string;
+  createdAt: string;
+}
+
+export interface Shift {
+  id: string;
+  cashierName: string;
+  openedAt: string;
+  closedAt?: string;
+  openingCash: number;
+  closingCash: number;
+  totalSales: number;
+  totalCash: number;
+  totalCard: number;
+  status: 'open' | 'closed';
+  notes?: string;
+  createdAt: string;
+}
+
+export interface StockTaking {
+  id: string;
+  date: string;
+  notes?: string;
+  status: 'draft' | 'completed';
+  createdAt: string;
+}
+
+export interface StockTakingItem {
+  id: string;
+  stockTakingId: string;
+  productId: string;
+  productName: string;
+  systemQty: number;
+  actualQty: number;
+  difference: number;
 }
 
 export type UnitType = 'piece' | 'weight';
 
 export const WEIGHT_UNITS = ['جرام', 'كيلو', 'مل', 'لتر', 'طن'];
 export const PIECE_UNITS = ['قطعة', 'علبة', 'كرتون', 'كيس', 'حبة'];
+
+export const EXPENSE_CATEGORIES = [
+  'إيجار', 'رواتب', 'كهرباء وماء', 'صيانة', 'مواصلات', 'تسويق', 'أخرى',
+];
 
 export type UserRole = 'admin' | 'cashier';
 

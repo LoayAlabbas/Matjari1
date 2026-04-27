@@ -82,14 +82,15 @@ export default function InvoiceDetailScreen() {
   }
 
   const isSale = invoice.invoiceType === 'بيع';
-  const typeColor = isSale ? Colors.primary : Colors.info;
+  const isReturn = invoice.invoiceType === 'مرتجع';
+  const typeColor = isSale ? Colors.primary : isReturn ? Colors.danger : Colors.info;
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
       <View style={styles.header}>
         <View style={styles.badgeRow}>
           <View style={[styles.typeBadge, { backgroundColor: typeColor + '22', borderColor: typeColor + '55' }]}>
-            <MaterialIcons name={isSale ? 'point-of-sale' : 'shopping-bag'} size={13} color={typeColor} />
+            <MaterialIcons name={isSale ? 'point-of-sale' : isReturn ? 'assignment-return' : 'shopping-bag'} size={13} color={typeColor} />
             <Text style={[styles.typeText, { color: typeColor }]}>فاتورة {invoice.invoiceType}</Text>
           </View>
           <View style={[styles.payBadge, { backgroundColor: invoice.paymentType === 'نقداً' ? Colors.primary + '22' : Colors.warning + '22' }]}>
@@ -159,8 +160,28 @@ export default function InvoiceDetailScreen() {
       </View>
 
       <View style={styles.summary}>
-        <View style={styles.summaryRow}>
-          <Text style={styles.summaryValue}>{formatCurrency(invoice.total, currency)}</Text>
+        {invoice.discountAmount > 0 || invoice.taxAmount > 0 ? (
+          <>
+            <View style={styles.summaryRow}>
+              <Text style={styles.summaryValue}>{formatCurrency(invoice.subtotal, currency)}</Text>
+              <Text style={styles.summaryLabel}>المجموع الفرعي</Text>
+            </View>
+            {invoice.discountAmount > 0 && (
+              <View style={[styles.summaryRow, styles.summaryRowBorder]}>
+                <Text style={[styles.summaryValue, { color: Colors.warning }]}>-{formatCurrency(invoice.discountAmount, currency)}</Text>
+                <Text style={styles.summaryLabel}>الخصم</Text>
+              </View>
+            )}
+            {invoice.taxAmount > 0 && (
+              <View style={[styles.summaryRow, styles.summaryRowBorder]}>
+                <Text style={[styles.summaryValue, { color: Colors.info }]}>+{formatCurrency(invoice.taxAmount, currency)}</Text>
+                <Text style={styles.summaryLabel}>ضريبة {invoice.taxRate}%</Text>
+              </View>
+            )}
+          </>
+        ) : null}
+        <View style={[styles.summaryRow, (invoice.discountAmount > 0 || invoice.taxAmount > 0) && styles.summaryRowBorder]}>
+          <Text style={[styles.summaryValue, { fontSize: FontSize.xxl }]}>{formatCurrency(invoice.total, currency)}</Text>
           <Text style={styles.summaryLabel}>الإجمالي</Text>
         </View>
         {isSale ? (

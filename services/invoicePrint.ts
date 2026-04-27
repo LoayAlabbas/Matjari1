@@ -272,10 +272,24 @@ export function generateInvoiceHTML(invoice: Invoice, items: InvoiceItem[], stor
           <span class="summary-label">عدد الأصناف</span>
           <span class="summary-value" style="color:#374151">${items.length}</span>
         </div>
+        ${(invoice.discountAmount ?? 0) > 0 || (invoice.taxAmount ?? 0) > 0 ? `
         <div class="summary-row">
-          <span class="summary-label">إجمالي الكميات</span>
-          <span class="summary-value" style="color:#374151">${items.reduce((s, i) => s + i.quantity, 0)} وحدة</span>
+          <span class="summary-label">المجموع الفرعي</span>
+          <span class="summary-value" style="color:#374151">${formatCurrencyHTML(invoice.subtotal ?? invoice.total)}</span>
         </div>
+        ` : ''}
+        ${(invoice.discountAmount ?? 0) > 0 ? `
+        <div class="summary-row">
+          <span class="summary-label">الخصم</span>
+          <span class="summary-value" style="color:#f59e0b">- ${formatCurrencyHTML(invoice.discountAmount)}</span>
+        </div>
+        ` : ''}
+        ${(invoice.taxAmount ?? 0) > 0 ? `
+        <div class="summary-row">
+          <span class="summary-label">ضريبة ${invoice.taxRate}%</span>
+          <span class="summary-value" style="color:#3b82f6">+ ${formatCurrencyHTML(invoice.taxAmount)}</span>
+        </div>
+        ` : ''}
         <div class="summary-row total-row">
           <span class="summary-label">المبلغ الإجمالي</span>
           <span class="summary-value">${formatCurrencyHTML(invoice.total)}</span>

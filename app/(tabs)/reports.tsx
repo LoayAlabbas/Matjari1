@@ -1,13 +1,13 @@
 // Powered by OnSpace.AI
 import React, { useState, useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, FlatList } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, Share, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useApp } from '@/hooks/useApp';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import StatCard from '@/components/ui/StatCard';
-import { formatCurrency } from '@/utils/format';
+import { formatCurrency, formatDate } from '@/utils/format';
 
 type Period = 'اليوم' | 'الشهر' | 'السنة' | 'الكل';
 type InvFilter = 'الكل' | 'بيع' | 'شراء';
@@ -15,7 +15,7 @@ type InvFilter = 'الكل' | 'بيع' | 'شراء';
 export default function ReportsScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { invoices, invoiceItems, customers, products, settings, refresh, syncing } = useApp();
+  const { invoices, invoiceItems, customers, products, expenses, settings, refresh, syncing } = useApp();
   const [period, setPeriod] = useState<Period>('الشهر');
   const [invFilter, setInvFilter] = useState<InvFilter>('الكل');
 
@@ -36,6 +36,13 @@ export default function ReportsScreen() {
     if (invFilter === 'الكل') return periodFiltered;
     return periodFiltered.filter(inv => inv.invoiceType === invFilter);
   }, [periodFiltered, invFilter]);
+
+  const expensesThisMonth = useMemo(() => {
+    const now = new Date();
+    return expenses
+      .filter(e => { const d = new Date(e.date); return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear(); })
+      .reduce((s, e) => s + e.amount, 0);
+  }, [expenses]);
 
   const stats = useMemo(() => {
     const saleInvoices = periodFiltered.filter(i => i.invoiceType === 'بيع');
@@ -79,13 +86,53 @@ export default function ReportsScreen() {
   const periods: Period[] = ['اليوم', 'الشهر', 'السنة', 'الكل'];
   const invFilters: InvFilter[] = ['الكل', 'بيع', 'شراء'];
 
+  async function handleExportCSV() {
+    const rows = [
+      ['رقم الفاتورة', 'النوع', 'التاريخ', 'العميل', 'الإجمالي', 'طريقة الدفع'].join(','),
+      ...invoices.map(inv => [
+        inv.number, inv.invoiceType,
+        new Date(inv.date).toLocaleDateString('en'),
+        inv.customerName || '',
+        inv.total, inv.paymentType,
+      ].join(',')),
+    ].join('\n');
+
+    try {
+      await Share.share({ message: rows, title: 'تقرير المبيعات' });
+    } catch {}
+  }
+
   return (
     <ScrollView style={[styles.container, { paddingTop: insets.top }]} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 20 }}>
       <View style={styles.header}>
-        <Pressable onPress={refresh} style={styles.syncBtn} hitSlop={8}>
-          <MaterialIcons name="refresh" size={22} color={syncing ? Colors.primary : Colors.textSecondary} />
-        </Pressable>
+        <View style={styles.headerActions}>
+          <Pressable onPress={handleExportCSV} style={styles.exportBtn} hitSlop={8}>
+            <MaterialIcons name="share" size={16} color={Colors.primary} />
+            <Text style={styles.exportBtnText}>تصدير</Text>
+          </Pressable>
+          <Pressable onPress={refresh} style={styles.syncBtn} hitSlop={8}>
+            <MaterialIcons name="refresh" size={22} color={syncing ? Colors.primary : Colors.textSecondary} />
+          </Pressable>
+        </View>
         <Text style={styles.headerTitle}>التقارير</Text>
+      </View>
+
+      {/* Quick navigation */}
+      <View style={styles.quickNav}>
+        {[
+          { label: 'المصاريف', icon: 'receipt-long', route: '/expenses', color: Colors.danger },
+          { label: 'الموردون', icon: 'local-shipping', route: '/suppliers', color: Colors.warning },
+          { label: 'الورديات', icon: 'schedule', route: '/shifts', color: Colors.info },
+        ].map(n => (
+          <Pressable
+            key={n.label}
+            style={[styles.quickNavBtn, { borderColor: n.color + '44' }]}
+            onPress={() => router.push(n.route as never)}
+          >
+            <MaterialIcons name={n.icon as any} size={22} color={n.color} />
+            <Text style={[styles.quickNavText, { color: n.color }]}>{n.label}</Text>
+          </Pressable>
+        ))}
       </View>
 
       <View style={styles.periodRow}>
@@ -106,7 +153,7 @@ export default function ReportsScreen() {
         <View style={[styles.row, { marginTop: Spacing.sm }]}>
           <StatCard title="فواتير الشراء" value={formatCurrency(stats.totalPurchases, currency)} icon="shopping-bag" iconColor={Colors.info} />
           <View style={{ width: Spacing.sm }} />
-          <StatCard title="مبيعات آجلة" value={formatCurrency(stats.creditSales, currency)} icon="credit-card" iconColor={Colors.warning} />
+          <StatCard title="مصاريف الشهر" value={formatCurrency(expensesThisMonth, currency)} icon="receipt-long" iconColor={Colors.danger} />
         </View>
       </View>
 
@@ -222,6 +269,12 @@ const styles = StyleSheet.create({
   },
   headerTitle: { color: Colors.text, fontSize: FontSize.xl, fontWeight: FontWeight.bold, textAlign: 'right' },
   syncBtn: { padding: 4 },
+  headerActions: { flexDirection: 'row-reverse', alignItems: 'center', gap: Spacing.sm },
+  exportBtn: { flexDirection: 'row-reverse', alignItems: 'center', gap: 4, backgroundColor: Colors.primary + '11', borderRadius: Radius.sm, paddingHorizontal: Spacing.sm, paddingVertical: 4, borderWidth: 1, borderColor: Colors.primary + '33' },
+  exportBtnText: { color: Colors.primary, fontSize: FontSize.xs, fontWeight: FontWeight.semiBold },
+  quickNav: { flexDirection: 'row-reverse', gap: Spacing.sm, paddingHorizontal: Spacing.lg, paddingTop: Spacing.md },
+  quickNavBtn: { flex: 1, backgroundColor: Colors.surface, borderRadius: Radius.lg, padding: Spacing.sm, alignItems: 'center', gap: 4, borderWidth: 1 },
+  quickNavText: { fontSize: FontSize.xs, fontWeight: FontWeight.semiBold },
   periodRow: {
     flexDirection: 'row-reverse', marginHorizontal: Spacing.lg, marginTop: Spacing.lg,
     backgroundColor: Colors.surface, borderRadius: Radius.lg, padding: 4,

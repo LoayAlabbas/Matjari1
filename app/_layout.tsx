@@ -61,6 +61,9 @@ export default function RootLayout() {
                   headerBackTitle: 'رجوع',
                 }}
               />
+              <Stack.Screen name="expenses" options={{ headerShown: false }} />
+              <Stack.Screen name="suppliers" options={{ headerShown: false }} />
+              <Stack.Screen name="shifts" options={{ headerShown: false }} />
             </Stack>
           </AppProvider>
         </AuthProvider>

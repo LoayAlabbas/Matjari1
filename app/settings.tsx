@@ -28,6 +28,9 @@ export default function SettingsScreen() {
   // Settings state
   const [storeName, setStoreName] = useState(settings?.storeName || 'متجري');
   const [currency, setCurrency] = useState(settings?.currency || 'د.ج');
+  const [taxEnabled, setTaxEnabled] = useState(settings?.taxEnabled || false);
+  const [taxRate, setTaxRate] = useState(settings?.taxRate?.toString() || '0');
+  const [shiftsEnabled, setShiftsEnabled] = useState(settings?.shiftsEnabled || false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [showCurrencyModal, setShowCurrencyModal] = useState(false);
 
@@ -49,6 +52,9 @@ export default function SettingsScreen() {
     if (settings) {
       setStoreName(settings.storeName);
       setCurrency(settings.currency);
+      setTaxEnabled(settings.taxEnabled);
+      setTaxRate(settings.taxRate?.toString() || '0');
+      setShiftsEnabled(settings.shiftsEnabled);
     }
   }, [settings]);
 
@@ -72,7 +78,10 @@ export default function SettingsScreen() {
     if (!storeName.trim()) { showAlert('تنبيه', 'اسم المتجر مطلوب'); return; }
     setSavingSettings(true);
     try {
-      await updateSettings({ storeName: storeName.trim(), currency, theme: 'dark', language: 'ar' });
+      await updateSettings({
+        storeName: storeName.trim(), currency, theme: 'dark', language: 'ar',
+        taxEnabled, taxRate: parseFloat(taxRate) || 0, shiftsEnabled,
+      });
       showAlert('تم', 'تم حفظ الإعدادات بنجاح');
     } catch {
       showAlert('خطأ', 'تعذّر حفظ الإعدادات');
@@ -207,6 +216,37 @@ export default function SettingsScreen() {
             <MaterialIcons name="expand-more" size={20} color={Colors.textSecondary} />
             <Text style={styles.currencyValue}>{currency}</Text>
           </Pressable>
+          {/* Tax */}
+          <View style={styles.switchRow}>
+            <Switch
+              value={taxEnabled}
+              onValueChange={setTaxEnabled}
+              thumbColor={taxEnabled ? Colors.primary : Colors.textMuted}
+              trackColor={{ false: Colors.border, true: Colors.primary + '55' }}
+            />
+            <Text style={styles.switchLabel}>تفعيل الضريبة (TVA)</Text>
+          </View>
+          {taxEnabled ? (
+            <StyledInput
+              label="نسبة الضريبة %"
+              value={taxRate}
+              onChangeText={setTaxRate}
+              placeholder="19"
+              keyboardType="numeric"
+            />
+          ) : null}
+
+          {/* Shifts */}
+          <View style={styles.switchRow}>
+            <Switch
+              value={shiftsEnabled}
+              onValueChange={setShiftsEnabled}
+              thumbColor={shiftsEnabled ? Colors.primary : Colors.textMuted}
+              trackColor={{ false: Colors.border, true: Colors.primary + '55' }}
+            />
+            <Text style={styles.switchLabel}>تفعيل نظام الورديات</Text>
+          </View>
+
           <StyledButton
             label={savingSettings ? 'جاري الحفظ...' : 'حفظ الإعدادات'}
             onPress={handleSaveSettings}
@@ -573,6 +613,8 @@ const styles = StyleSheet.create({
 
   activeRow: { flexDirection: 'row-reverse', alignItems: 'center', gap: Spacing.md, paddingVertical: Spacing.sm },
   activeLabel: { color: Colors.text, fontSize: FontSize.md, flex: 1, textAlign: 'right' },
+  switchRow: { flexDirection: 'row-reverse', alignItems: 'center', gap: Spacing.md, paddingVertical: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border, marginTop: Spacing.sm },
+  switchLabel: { color: Colors.text, fontSize: FontSize.md, flex: 1, textAlign: 'right' },
 
   modalOverlay: { flex: 1, backgroundColor: Colors.overlay, justifyContent: 'flex-end' },
   modalSheet: { backgroundColor: Colors.surface, borderTopLeftRadius: Radius.xl, borderTopRightRadius: Radius.xl, padding: Spacing.xl, maxHeight: '80%' },

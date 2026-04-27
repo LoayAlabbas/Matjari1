@@ -12,7 +12,7 @@ import { formatCurrency, isExpiringSoon, isExpired } from '@/utils/format';
 export default function DashboardScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { products, customers, invoices, invoiceItems, settings, loading, syncing, refresh } = useApp();
+  const { products, customers, invoices, invoiceItems, expenses, settings, openShift, loading, syncing, refresh } = useApp();
 
   const currency = settings?.currency || 'د.ج';
   const storeName = settings?.storeName || 'متجري';
@@ -105,6 +105,22 @@ export default function DashboardScreen() {
           <StatCard title="إجمالي الديون" value={formatCurrency(stats.totalDebt, currency)} icon="account-balance-wallet" iconColor={Colors.danger} />
         </View>
       </View>
+
+      {/* Shift status banner */}
+      {settings?.shiftsEnabled ? (
+        <View style={[styles.section, { paddingTop: 0 }]}>
+          <Pressable
+            style={[styles.shiftBanner, { borderColor: openShift ? Colors.success + '55' : Colors.warning + '55', backgroundColor: openShift ? Colors.success + '11' : Colors.warning + '11' }]}
+            onPress={() => router.push('/shifts' as never)}
+          >
+            <MaterialIcons name="schedule" size={18} color={openShift ? Colors.success : Colors.warning} />
+            <Text style={[styles.shiftBannerText, { color: openShift ? Colors.success : Colors.warning }]}>
+              {openShift ? `وردية مفتوحة — ${openShift.cashierName}` : 'لا توجد وردية مفتوحة — اضغط لفتح'}
+            </Text>
+            <MaterialIcons name="chevron-left" size={18} color={openShift ? Colors.success : Colors.warning} />
+          </Pressable>
+        </View>
+      ) : null}
 
       {alerts.length > 0 ? (
         <View style={styles.section}>
@@ -210,6 +226,8 @@ const styles = StyleSheet.create({
   storeName: { color: Colors.text, fontSize: FontSize.xl, fontWeight: FontWeight.bold, textAlign: 'right' },
   date: { color: Colors.textSecondary, fontSize: FontSize.xs, textAlign: 'right' },
   settingsBtn: { padding: 4 },
+  shiftBanner: { flexDirection: 'row-reverse', alignItems: 'center', gap: Spacing.sm, borderRadius: Radius.lg, padding: Spacing.md, borderWidth: 1 },
+  shiftBannerText: { flex: 1, fontSize: FontSize.sm, fontWeight: FontWeight.semiBold, textAlign: 'right' },
   section: { paddingHorizontal: Spacing.lg, marginTop: Spacing.lg },
   sectionTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: FontWeight.semiBold, textAlign: 'right', marginBottom: Spacing.sm },
   row: { flexDirection: 'row' },

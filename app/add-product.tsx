@@ -27,6 +27,7 @@ export default function AddProductScreen() {
   const [barcode, setBarcode] = useState(existing?.barcode || '');
   const [buyPrice, setBuyPrice] = useState(existing?.buyPrice.toString() || '');
   const [sellPrice, setSellPrice] = useState(existing?.sellPrice.toString() || '');
+  const [wholesalePrice, setWholesalePrice] = useState(existing?.wholesalePrice?.toString() || '');
   const [quantity, setQuantity] = useState(existing?.quantity.toString() || '');
   const [minQuantity, setMinQuantity] = useState(existing?.minQuantity.toString() || '10');
   const [category, setCategory] = useState(existing?.category || CATEGORIES[0]);
@@ -62,6 +63,7 @@ export default function AddProductScreen() {
       barcode: barcode.trim() || undefined,
       buyPrice: Number(buyPrice),
       sellPrice: Number(sellPrice),
+      wholesalePrice: Number(wholesalePrice) || 0,
       quantity: unitType === 'piece' ? Number(quantity) : 0,
       minQuantity: unitType === 'piece' ? (Number(minQuantity) || 10) : 0,
       category,
@@ -220,6 +222,14 @@ export default function AddProductScreen() {
             </Text>
           </View>
         ) : null}
+
+        <StyledInput
+          label="سعر الجملة (اختياري)"
+          value={wholesalePrice}
+          onChangeText={setWholesalePrice}
+          placeholder="0"
+          keyboardType="numeric"
+        />
 
         {unitType === 'piece' ? (
           <View style={styles.row}>

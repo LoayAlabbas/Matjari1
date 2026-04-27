@@ -11,18 +11,18 @@ import { useAlert } from '@/template';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
 import StyledButton from '@/components/ui/StyledButton';
 import BarcodeScanner from '@/components/ui/BarcodeScanner';
-import { CartItem, InvoiceType, Product } from '@/types';
+import { CartItem, DiscountType, InvoiceType, PaymentType, Product } from '@/types';
 import { formatCurrency } from '@/utils/format';
 
 export default function SalesScreen() {
   const insets = useSafeAreaInsets();
-  const { products, customers, saveInvoice, nextInvoiceNumber, settings, syncing, addProduct } = useApp();
+  const { products, customers, saveInvoice, nextInvoiceNumber, settings, syncing, addProduct, openShift } = useApp();
   const { showAlert } = useAlert();
 
   const [invoiceType, setInvoiceType] = useState<InvoiceType>('بيع');
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [paymentType, setPaymentType] = useState<'نقداً' | 'آجل'>('نقداً');
+  const [paymentType, setPaymentType] = useState<PaymentType>('نقداً');
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | undefined>();
   const [showCustomerModal, setShowCustomerModal] = useState(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
@@ -31,12 +31,22 @@ export default function SalesScreen() {
   const [showScanner, setShowScanner] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // Weight product quantity modal
+  // Discount
+  const [discountType, setDiscountType] = useState<DiscountType>('percent');
+  const [discountValue, setDiscountValue] = useState('');
+  const [showDiscountModal, setShowDiscountModal] = useState(false);
+
+  // Second payment
+  const [showSecondPayment, setShowSecondPayment] = useState(false);
+  const [secondPaymentMethod, setSecondPaymentMethod] = useState<PaymentType>('بطاقة');
+  const [secondPaymentAmount, setSecondPaymentAmount] = useState('');
+
+  // Weight modal
   const [showWeightModal, setShowWeightModal] = useState(false);
   const [weightProduct, setWeightProduct] = useState<Product | null>(null);
   const [weightInput, setWeightInput] = useState('');
 
-  // New product from barcode scan (for purchase invoices)
+  // New product from barcode
   const [showNewProductModal, setShowNewProductModal] = useState(false);
   const [scannedBarcode, setScannedBarcode] = useState('');
   const [newProductName, setNewProductName] = useState('');
@@ -45,12 +55,13 @@ export default function SalesScreen() {
   const [savingNewProduct, setSavingNewProduct] = useState(false);
 
   const currency = settings?.currency || 'د.ج';
+  const taxEnabled = settings?.taxEnabled || false;
+  const taxRate = settings?.taxRate || 0;
 
   const filteredProducts = useMemo(() =>
     products.filter(p => {
       const matchSearch = p.name.includes(search) || (p.barcode && p.barcode.includes(search));
       if (!matchSearch) return false;
-      // For sale invoices, piece products need stock; weight products are always available
       if (invoiceType === 'بيع' && p.unitType === 'piece' && p.quantity <= 0) return false;
       return true;
     }).slice(0, 50),
@@ -62,19 +73,27 @@ export default function SalesScreen() {
     [customers, customerSearch]
   );
 
-  const total = useMemo(() => cart.reduce((s, i) => s + i.price * i.quantity, 0), [cart]);
+  const subtotal = useMemo(() => cart.reduce((s, i) => s + i.price * i.quantity, 0), [cart]);
+
+  const discountAmount = useMemo(() => {
+    const val = parseFloat(discountValue) || 0;
+    if (discountType === 'percent') return subtotal * val / 100;
+    return Math.min(val, subtotal);
+  }, [subtotal, discountValue, discountType]);
+
+  const afterDiscount = subtotal - discountAmount;
+  const taxAmount = taxEnabled && invoiceType === 'بيع' ? afterDiscount * taxRate / 100 : 0;
+  const total = afterDiscount + taxAmount;
+
   const selectedCustomer = customers.find(c => c.id === selectedCustomerId);
 
-  // ── Add product to cart ────────────────────────────────────────────────────
   const addToCart = useCallback((product: Product) => {
     if (product.unitType === 'weight') {
-      // For weight products, open the weight input modal
       setWeightProduct(product);
       setWeightInput('');
       setShowWeightModal(true);
       return;
     }
-    // Piece product
     setCart(prev => {
       const existing = prev.find(i => i.productId === product.id);
       if (existing) {
@@ -90,40 +109,28 @@ export default function SalesScreen() {
         price: invoiceType === 'شراء' ? product.buyPrice : product.sellPrice,
         buyPrice: product.buyPrice,
         quantity: 1,
-        maxQuantity: invoiceType === 'شراء' ? 9999 : product.quantity,
+        maxQuantity: invoiceType === 'شراء' || invoiceType === 'مرتجع' ? 9999 : product.quantity,
         unit: product.unit,
         unitType: product.unitType,
       }];
     });
   }, [invoiceType, showAlert]);
 
-  // Confirm weight input
   function confirmWeightAdd() {
     if (!weightProduct) return;
     const qty = parseFloat(weightInput.replace(',', '.'));
-    if (isNaN(qty) || qty <= 0) {
-      showAlert('تنبيه', 'أدخل كمية صحيحة');
-      return;
-    }
+    if (isNaN(qty) || qty <= 0) { showAlert('تنبيه', 'أدخل كمية صحيحة'); return; }
     const unitPrice = invoiceType === 'شراء' ? weightProduct.buyPrice : weightProduct.sellPrice;
     setCart(prev => {
       const existing = prev.find(i => i.productId === weightProduct.id);
       if (existing) {
-        return prev.map(i =>
-          i.productId === weightProduct.id
-            ? { ...i, quantity: parseFloat((i.quantity + qty).toFixed(4)) }
-            : i
-        );
+        return prev.map(i => i.productId === weightProduct.id ? { ...i, quantity: parseFloat((i.quantity + qty).toFixed(4)) } : i);
       }
       return [...prev, {
-        productId: weightProduct.id,
-        productName: weightProduct.name,
-        price: unitPrice,
-        buyPrice: weightProduct.buyPrice,
-        quantity: qty,
-        maxQuantity: 99999,
-        unit: weightProduct.unit,
-        unitType: weightProduct.unitType,
+        productId: weightProduct.id, productName: weightProduct.name,
+        price: unitPrice, buyPrice: weightProduct.buyPrice,
+        quantity: qty, maxQuantity: 99999,
+        unit: weightProduct.unit, unitType: weightProduct.unitType,
       }];
     });
     setShowWeightModal(false);
@@ -137,9 +144,7 @@ export default function SalesScreen() {
       addToCart(product);
     } else if (invoiceType === 'شراء') {
       setScannedBarcode(barcode);
-      setNewProductName('');
-      setNewProductBuyPrice('');
-      setNewProductSellPrice('');
+      setNewProductName(''); setNewProductBuyPrice(''); setNewProductSellPrice('');
       setShowNewProductModal(true);
     } else {
       showAlert('غير موجود', `لم يتم العثور على منتج بالباركود: ${barcode}`);
@@ -148,21 +153,15 @@ export default function SalesScreen() {
 
   async function handleAddNewProductFromScan() {
     if (!newProductName.trim()) { showAlert('تنبيه', 'اسم المنتج مطلوب'); return; }
-    if (!newProductBuyPrice || isNaN(Number(newProductBuyPrice))) {
-      showAlert('تنبيه', 'سعر الشراء غير صحيح'); return;
-    }
+    if (!newProductBuyPrice || isNaN(Number(newProductBuyPrice))) { showAlert('تنبيه', 'سعر الشراء غير صحيح'); return; }
     setSavingNewProduct(true);
     try {
       await addProduct({
-        name: newProductName.trim(),
-        barcode: scannedBarcode,
+        name: newProductName.trim(), barcode: scannedBarcode,
         buyPrice: Number(newProductBuyPrice),
         sellPrice: Number(newProductSellPrice) || Number(newProductBuyPrice),
-        quantity: 0,
-        minQuantity: 10,
-        category: 'أخرى',
-        unitType: 'piece',
-        unit: 'قطعة',
+        wholesalePrice: 0, quantity: 0, minQuantity: 10, category: 'أخرى',
+        unitType: 'piece', unit: 'قطعة',
       });
       setShowNewProductModal(false);
       showAlert('تم', 'تم إضافة المنتج. أضفه إلى الفاتورة من قائمة المنتجات.');
@@ -174,18 +173,16 @@ export default function SalesScreen() {
   }
 
   function updateQty(productId: string, delta: number) {
-    setCart(prev =>
-      prev.map(i => {
-        if (i.productId !== productId) return i;
-        const newQty = parseFloat((i.quantity + delta).toFixed(4));
-        if (newQty <= 0) return i;
-        if (i.unitType === 'piece' && invoiceType === 'بيع' && newQty > i.maxQuantity) {
-          showAlert('تنبيه', `الكمية المتاحة: ${i.maxQuantity}`);
-          return i;
-        }
-        return { ...i, quantity: newQty };
-      })
-    );
+    setCart(prev => prev.map(i => {
+      if (i.productId !== productId) return i;
+      const newQty = parseFloat((i.quantity + delta).toFixed(4));
+      if (newQty <= 0) return i;
+      if (i.unitType === 'piece' && invoiceType === 'بيع' && newQty > i.maxQuantity) {
+        showAlert('تنبيه', `الكمية المتاحة: ${i.maxQuantity}`);
+        return i;
+      }
+      return { ...i, quantity: newQty };
+    }));
   }
 
   function editWeightItem(item: CartItem) {
@@ -194,7 +191,6 @@ export default function SalesScreen() {
     setWeightProduct(prod);
     setWeightInput(item.quantity.toString());
     setShowWeightModal(true);
-    // When editing, first remove the item
     setCart(prev => prev.filter(i => i.productId !== item.productId));
   }
 
@@ -207,30 +203,49 @@ export default function SalesScreen() {
     if (paymentType === 'آجل' && !selectedCustomerId) {
       showAlert('تنبيه', 'يجب اختيار زبون للبيع الآجل'); return;
     }
+    if (settings?.shiftsEnabled && !openShift && invoiceType === 'بيع') {
+      showAlert('تنبيه', 'يجب فتح وردية قبل البيع'); return;
+    }
+    if (showSecondPayment) {
+      const secAmt = parseFloat(secondPaymentAmount) || 0;
+      if (secAmt <= 0 || secAmt >= total) {
+        showAlert('تنبيه', 'مبلغ الدفع الثاني غير صحيح'); return;
+      }
+    }
     const num = nextInvoiceNumber;
     setSaving(true);
     try {
+      const secAmt = showSecondPayment ? (parseFloat(secondPaymentAmount) || 0) : 0;
       await saveInvoice(
         {
           date: new Date().toISOString(),
           customerId: selectedCustomerId,
           customerName: selectedCustomer?.name,
+          subtotal,
+          discountType,
+          discountValue: parseFloat(discountValue) || 0,
+          discountAmount,
+          taxRate: taxEnabled && invoiceType === 'بيع' ? taxRate : 0,
+          taxAmount,
           total,
           paymentType,
+          secondPaymentMethod: showSecondPayment ? secondPaymentMethod : undefined,
+          secondPaymentAmount: secAmt,
           invoiceType,
+          shiftId: openShift?.id,
         },
         cart.map(i => ({
-          productId: i.productId,
-          productName: i.productName,
-          quantity: i.quantity,
-          price: i.price,
-          buyPrice: i.buyPrice,
+          productId: i.productId, productName: i.productName,
+          quantity: i.quantity, price: i.price, buyPrice: i.buyPrice,
         }))
       );
       setLastInvoiceNum(num);
       setCart([]);
       setSelectedCustomerId(undefined);
       setPaymentType('نقداً');
+      setDiscountValue('');
+      setShowSecondPayment(false);
+      setSecondPaymentAmount('');
       setShowSuccessModal(true);
     } catch {
       showAlert('خطأ', 'تعذّر حفظ الفاتورة');
@@ -244,20 +259,23 @@ export default function SalesScreen() {
     setCart([]);
     setPaymentType('نقداً');
     setSelectedCustomerId(undefined);
+    setDiscountValue('');
+    setShowSecondPayment(false);
   }
 
-  function formatQty(qty: number, unit: string, unitType: string) {
-    if (unitType === 'weight') {
-      return `${qty % 1 === 0 ? qty : qty.toFixed(2)} ${unit}`;
-    }
-    return `${qty}`;
-  }
+  const paymentOptions: PaymentType[] = invoiceType === 'بيع' ? ['نقداً', 'بطاقة', 'تحويل', 'آجل'] : ['نقداً'];
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           {syncing ? <MaterialIcons name="sync" size={16} color={Colors.primary} /> : null}
+          {settings?.shiftsEnabled && openShift ? (
+            <View style={styles.shiftBadge}>
+              <MaterialIcons name="schedule" size={11} color={Colors.success} />
+              <Text style={styles.shiftBadgeText}>{openShift.cashierName}</Text>
+            </View>
+          ) : null}
           <Text style={styles.headerSub}>فاتورة #{nextInvoiceNumber}</Text>
         </View>
         <Text style={styles.headerTitle}>الكاشير</Text>
@@ -265,20 +283,20 @@ export default function SalesScreen() {
 
       {/* Invoice Type Toggle */}
       <View style={styles.typeToggle}>
-        {(['بيع', 'شراء'] as InvoiceType[]).map(t => (
+        {(['بيع', 'شراء', 'مرتجع'] as InvoiceType[]).map(t => (
           <Pressable
             key={t}
-            style={[styles.typeBtn, invoiceType === t && (t === 'بيع' ? styles.typeBtnSale : styles.typeBtnPurchase)]}
+            style={[styles.typeBtn, invoiceType === t && (
+              t === 'بيع' ? styles.typeBtnSale : t === 'شراء' ? styles.typeBtnPurchase : styles.typeBtnReturn
+            )]}
             onPress={() => switchInvoiceType(t)}
           >
             <MaterialIcons
-              name={t === 'بيع' ? 'point-of-sale' : 'shopping-bag'}
-              size={16}
+              name={t === 'بيع' ? 'point-of-sale' : t === 'شراء' ? 'shopping-bag' : 'assignment-return'}
+              size={14}
               color={invoiceType === t ? Colors.white : Colors.textSecondary}
             />
-            <Text style={[styles.typeBtnText, invoiceType === t && styles.typeBtnTextActive]}>
-              فاتورة {t}
-            </Text>
+            <Text style={[styles.typeBtnText, invoiceType === t && styles.typeBtnTextActive]}>{t}</Text>
           </Pressable>
         ))}
       </View>
@@ -310,22 +328,13 @@ export default function SalesScreen() {
             data={filteredProducts}
             keyExtractor={p => p.id}
             showsVerticalScrollIndicator={false}
-            numColumns={1}
             renderItem={({ item }) => (
               <Pressable
                 style={({ pressed }) => [styles.productCard, { opacity: pressed ? 0.8 : 1 }]}
                 onPress={() => addToCart(item)}
               >
-                {/* Unit type badge */}
-                <View style={[
-                  styles.unitBadge,
-                  { backgroundColor: item.unitType === 'weight' ? Colors.warning + '22' : Colors.primary + '22' }
-                ]}>
-                  <MaterialIcons
-                    name={item.unitType === 'weight' ? 'scale' : 'inventory-2'}
-                    size={10}
-                    color={item.unitType === 'weight' ? Colors.warning : Colors.primary}
-                  />
+                <View style={[styles.unitBadge, { backgroundColor: item.unitType === 'weight' ? Colors.warning + '22' : Colors.primary + '22' }]}>
+                  <MaterialIcons name={item.unitType === 'weight' ? 'scale' : 'inventory-2'} size={10} color={item.unitType === 'weight' ? Colors.warning : Colors.primary} />
                   <Text style={[styles.unitBadgeText, { color: item.unitType === 'weight' ? Colors.warning : Colors.primary }]}>
                     {item.unitType === 'weight' ? `/${item.unit}` : item.unit}
                   </Text>
@@ -335,9 +344,7 @@ export default function SalesScreen() {
                 </Text>
                 <Text style={styles.productName} numberOfLines={2}>{item.name}</Text>
                 {item.unitType === 'piece' ? (
-                  <View style={styles.qtyBadge}>
-                    <Text style={styles.qtyBadgeText}>{item.quantity}</Text>
-                  </View>
+                  <View style={styles.qtyBadge}><Text style={styles.qtyBadgeText}>{item.quantity}</Text></View>
                 ) : (
                   <View style={[styles.qtyBadge, { backgroundColor: Colors.warning + '22' }]}>
                     <MaterialIcons name="scale" size={9} color={Colors.warning} />
@@ -356,7 +363,18 @@ export default function SalesScreen() {
 
         {/* Cart panel */}
         <View style={styles.cartPanel}>
-          <Text style={styles.cartTitle}>السلة ({cart.length})</Text>
+          <View style={styles.cartHeader}>
+            <Text style={styles.cartTitle}>السلة ({cart.length})</Text>
+            {invoiceType === 'بيع' && (
+              <Pressable onPress={() => setShowDiscountModal(true)} style={styles.discountBtn} hitSlop={8}>
+                <MaterialIcons name="local-offer" size={14} color={discountValue ? Colors.warning : Colors.textSecondary} />
+                <Text style={[styles.discountBtnText, { color: discountValue ? Colors.warning : Colors.textSecondary }]}>
+                  {discountValue ? (discountType === 'percent' ? `${discountValue}%` : formatCurrency(parseFloat(discountValue), currency)) : 'خصم'}
+                </Text>
+              </Pressable>
+            )}
+          </View>
+
           <ScrollView style={styles.cartList} showsVerticalScrollIndicator={false}>
             {cart.length === 0 ? (
               <View style={styles.emptyCart}>
@@ -370,7 +388,6 @@ export default function SalesScreen() {
                     <MaterialIcons name="close" size={16} color={Colors.danger} />
                   </Pressable>
                   {item.unitType === 'weight' ? (
-                    // Weight item: tap to edit quantity
                     <Pressable style={styles.weightQtyBtn} onPress={() => editWeightItem(item)}>
                       <MaterialIcons name="edit" size={11} color={Colors.warning} />
                       <Text style={styles.weightQtyText}>
@@ -398,6 +415,28 @@ export default function SalesScreen() {
           </ScrollView>
 
           <View style={styles.cartFooter}>
+            {/* Totals */}
+            {discountAmount > 0 || taxAmount > 0 ? (
+              <View style={styles.breakdownBox}>
+                <View style={styles.breakdownRow}>
+                  <Text style={styles.breakdownVal}>{formatCurrency(subtotal, currency)}</Text>
+                  <Text style={styles.breakdownLabel}>المجموع الفرعي</Text>
+                </View>
+                {discountAmount > 0 && (
+                  <View style={styles.breakdownRow}>
+                    <Text style={[styles.breakdownVal, { color: Colors.warning }]}>-{formatCurrency(discountAmount, currency)}</Text>
+                    <Text style={styles.breakdownLabel}>الخصم</Text>
+                  </View>
+                )}
+                {taxAmount > 0 && (
+                  <View style={styles.breakdownRow}>
+                    <Text style={[styles.breakdownVal, { color: Colors.info }]}>+{formatCurrency(taxAmount, currency)}</Text>
+                    <Text style={styles.breakdownLabel}>ضريبة {taxRate}%</Text>
+                  </View>
+                )}
+              </View>
+            ) : null}
+
             <View style={styles.totalRow}>
               <Text style={styles.totalValue}>{formatCurrency(total, currency)}</Text>
               <Text style={styles.totalLabel}>الإجمالي:</Text>
@@ -405,8 +444,8 @@ export default function SalesScreen() {
 
             {invoiceType === 'بيع' ? (
               <>
-                <View style={styles.paymentToggle}>
-                  {(['نقداً', 'آجل'] as const).map(type => (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.paymentScroll}>
+                  {paymentOptions.map(type => (
                     <Pressable
                       key={type}
                       style={[styles.payBtn, paymentType === type && styles.payBtnActive]}
@@ -415,7 +454,8 @@ export default function SalesScreen() {
                       <Text style={[styles.payBtnText, paymentType === type && styles.payBtnTextActive]}>{type}</Text>
                     </Pressable>
                   ))}
-                </View>
+                </ScrollView>
+
                 {paymentType === 'آجل' ? (
                   <Pressable style={styles.customerPicker} onPress={() => setShowCustomerModal(true)}>
                     <MaterialIcons name="person" size={16} color={Colors.primary} />
@@ -424,11 +464,46 @@ export default function SalesScreen() {
                     </Text>
                   </Pressable>
                 ) : null}
+
+                {paymentType !== 'آجل' ? (
+                  <Pressable
+                    style={styles.secondPayToggle}
+                    onPress={() => { setShowSecondPayment(!showSecondPayment); setSecondPaymentAmount(''); }}
+                  >
+                    <MaterialIcons name={showSecondPayment ? 'check-box' : 'check-box-outline-blank'} size={16} color={Colors.primary} />
+                    <Text style={styles.secondPayToggleText}>دفع مزدوج (كاش + بطاقة)</Text>
+                  </Pressable>
+                ) : null}
+
+                {showSecondPayment ? (
+                  <View style={styles.secondPayRow}>
+                    <TextInput
+                      style={styles.secondPayInput}
+                      placeholder="مبلغ البطاقة"
+                      placeholderTextColor={Colors.textMuted}
+                      value={secondPaymentAmount}
+                      onChangeText={setSecondPaymentAmount}
+                      keyboardType="numeric"
+                      textAlign="right"
+                    />
+                    <View style={styles.secondPayMethodToggle}>
+                      {(['بطاقة', 'تحويل'] as PaymentType[]).map(m => (
+                        <Pressable
+                          key={m}
+                          style={[styles.secondPayMethodBtn, secondPaymentMethod === m && styles.secondPayMethodBtnActive]}
+                          onPress={() => setSecondPaymentMethod(m)}
+                        >
+                          <Text style={[styles.secondPayMethodText, secondPaymentMethod === m && { color: Colors.white }]}>{m}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  </View>
+                ) : null}
               </>
             ) : null}
 
             <StyledButton
-              label={saving ? 'جاري الحفظ...' : `إتمام ${invoiceType === 'بيع' ? 'البيع' : 'الشراء'}`}
+              label={saving ? 'جاري الحفظ...' : `إتمام ${invoiceType === 'بيع' ? 'البيع' : invoiceType === 'شراء' ? 'الشراء' : 'المرتجع'}`}
               onPress={handleCheckout}
               fullWidth
               disabled={cart.length === 0 || saving}
@@ -439,7 +514,60 @@ export default function SalesScreen() {
 
       <BarcodeScanner visible={showScanner} onClose={() => setShowScanner(false)} onScan={handleBarcodeScan} />
 
-      {/* ── Weight quantity input modal ── */}
+      {/* Discount Modal */}
+      <Modal visible={showDiscountModal} transparent animationType="fade">
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+          <View style={styles.discountCard}>
+            <View style={styles.modalHeader}>
+              <Pressable onPress={() => setShowDiscountModal(false)} hitSlop={8}>
+                <MaterialIcons name="close" size={22} color={Colors.textSecondary} />
+              </Pressable>
+              <Text style={styles.modalTitle}>تطبيق خصم</Text>
+            </View>
+
+            <View style={styles.discountTypeRow}>
+              {(['percent', 'fixed'] as DiscountType[]).map(t => (
+                <Pressable
+                  key={t}
+                  style={[styles.discountTypeBtn, discountType === t && styles.discountTypeBtnActive]}
+                  onPress={() => { setDiscountType(t); setDiscountValue(''); }}
+                >
+                  <Text style={[styles.discountTypeText, discountType === t && { color: Colors.white }]}>
+                    {t === 'percent' ? 'نسبة %' : 'مبلغ ثابت'}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <View style={styles.discountInputRow}>
+              <Text style={styles.discountUnit}>{discountType === 'percent' ? '%' : currency}</Text>
+              <TextInput
+                style={styles.discountInput}
+                value={discountValue}
+                onChangeText={setDiscountValue}
+                keyboardType="decimal-pad"
+                placeholder="0"
+                placeholderTextColor={Colors.textMuted}
+                textAlign="center"
+                autoFocus
+              />
+            </View>
+
+            {discountValue && !isNaN(parseFloat(discountValue)) ? (
+              <Text style={styles.discountPreview}>
+                الخصم: {formatCurrency(discountType === 'percent' ? subtotal * parseFloat(discountValue) / 100 : parseFloat(discountValue), currency)}
+              </Text>
+            ) : null}
+
+            <View style={styles.discountBtnsRow}>
+              <StyledButton label="إزالة الخصم" variant="secondary" onPress={() => { setDiscountValue(''); setShowDiscountModal(false); }} style={{ flex: 1 }} />
+              <StyledButton label="تطبيق" onPress={() => setShowDiscountModal(false)} style={{ flex: 1 }} />
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Weight modal */}
       <Modal visible={showWeightModal} transparent animationType="fade">
         <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <View style={styles.weightModalCard}>
@@ -451,12 +579,10 @@ export default function SalesScreen() {
                 <MaterialIcons name="scale" size={24} color={Colors.warning} />
               </View>
             </View>
-
             <Text style={styles.weightModalTitle}>{weightProduct?.name}</Text>
             <Text style={styles.weightModalSub}>
               السعر: {formatCurrency(invoiceType === 'شراء' ? (weightProduct?.buyPrice || 0) : (weightProduct?.sellPrice || 0), currency)} / {weightProduct?.unit}
             </Text>
-
             <View style={styles.weightInputWrap}>
               <Text style={styles.weightInputUnit}>{weightProduct?.unit}</Text>
               <TextInput
@@ -471,40 +597,24 @@ export default function SalesScreen() {
                 selectTextOnFocus
               />
             </View>
-
             {weightInput && !isNaN(parseFloat(weightInput)) && parseFloat(weightInput) > 0 ? (
               <View style={styles.weightCalc}>
                 <Text style={styles.weightCalcText}>
                   {parseFloat(weightInput).toFixed(2)} {weightProduct?.unit} × {formatCurrency(invoiceType === 'شراء' ? (weightProduct?.buyPrice || 0) : (weightProduct?.sellPrice || 0), currency)}
                 </Text>
                 <Text style={styles.weightCalcTotal}>
-                  = {formatCurrency(
-                    parseFloat(weightInput) * (invoiceType === 'شراء' ? (weightProduct?.buyPrice || 0) : (weightProduct?.sellPrice || 0)),
-                    currency
-                  )}
+                  = {formatCurrency(parseFloat(weightInput) * (invoiceType === 'شراء' ? (weightProduct?.buyPrice || 0) : (weightProduct?.sellPrice || 0)), currency)}
                 </Text>
               </View>
             ) : null}
-
-            {/* Quick presets */}
             <View style={styles.presets}>
               {['100', '250', '500', '1000'].map(p => (
-                <Pressable
-                  key={p}
-                  style={styles.presetBtn}
-                  onPress={() => setWeightInput(p)}
-                >
+                <Pressable key={p} style={styles.presetBtn} onPress={() => setWeightInput(p)}>
                   <Text style={styles.presetText}>{p}</Text>
                 </Pressable>
               ))}
             </View>
-
-            <StyledButton
-              label="إضافة إلى السلة"
-              onPress={confirmWeightAdd}
-              fullWidth
-              style={{ marginTop: Spacing.sm }}
-            />
+            <StyledButton label="إضافة إلى السلة" onPress={confirmWeightAdd} fullWidth style={{ marginTop: Spacing.sm }} />
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -565,39 +675,12 @@ export default function SalesScreen() {
               <MaterialIcons name="qr-code" size={14} color={Colors.info} />
               <Text style={styles.barcodeTagText}>{scannedBarcode}</Text>
             </View>
-            <TextInput
-              style={styles.newProductInput}
-              placeholder="اسم المنتج *"
-              placeholderTextColor={Colors.textMuted}
-              value={newProductName}
-              onChangeText={setNewProductName}
-              textAlign="right"
-            />
+            <TextInput style={styles.newProductInput} placeholder="اسم المنتج *" placeholderTextColor={Colors.textMuted} value={newProductName} onChangeText={setNewProductName} textAlign="right" />
             <View style={styles.priceInputRow}>
-              <TextInput
-                style={[styles.newProductInput, { flex: 1 }]}
-                placeholder={`سعر الشراء (${currency}) *`}
-                placeholderTextColor={Colors.textMuted}
-                value={newProductBuyPrice}
-                onChangeText={setNewProductBuyPrice}
-                keyboardType="numeric"
-                textAlign="right"
-              />
-              <TextInput
-                style={[styles.newProductInput, { flex: 1 }]}
-                placeholder={`سعر البيع (${currency})`}
-                placeholderTextColor={Colors.textMuted}
-                value={newProductSellPrice}
-                onChangeText={setNewProductSellPrice}
-                keyboardType="numeric"
-                textAlign="right"
-              />
+              <TextInput style={[styles.newProductInput, { flex: 1 }]} placeholder={`سعر الشراء (${currency}) *`} placeholderTextColor={Colors.textMuted} value={newProductBuyPrice} onChangeText={setNewProductBuyPrice} keyboardType="numeric" textAlign="right" />
+              <TextInput style={[styles.newProductInput, { flex: 1 }]} placeholder={`سعر البيع (${currency})`} placeholderTextColor={Colors.textMuted} value={newProductSellPrice} onChangeText={setNewProductSellPrice} keyboardType="numeric" textAlign="right" />
             </View>
-            <Pressable
-              style={[styles.confirmBtn, savingNewProduct && { opacity: 0.7 }]}
-              onPress={handleAddNewProductFromScan}
-              disabled={savingNewProduct}
-            >
+            <Pressable style={[styles.confirmBtn, savingNewProduct && { opacity: 0.7 }]} onPress={handleAddNewProductFromScan} disabled={savingNewProduct}>
               <MaterialIcons name="add-circle" size={18} color={Colors.white} />
               <Text style={styles.confirmBtnText}>{savingNewProduct ? 'جاري الإضافة...' : 'حفظ المنتج'}</Text>
             </Pressable>
@@ -613,7 +696,7 @@ export default function SalesScreen() {
               <MaterialIcons name="check-circle" size={64} color={Colors.success} />
             </View>
             <Text style={styles.successTitle}>
-              {invoiceType === 'بيع' ? 'تم البيع بنجاح!' : 'تم تسجيل الشراء!'}
+              {invoiceType === 'بيع' ? 'تم البيع بنجاح!' : invoiceType === 'شراء' ? 'تم تسجيل الشراء!' : 'تم تسجيل المرتجع!'}
             </Text>
             <Text style={styles.successSub}>فاتورة #{lastInvoiceNum}</Text>
             <StyledButton label="فاتورة جديدة" onPress={() => setShowSuccessModal(false)} fullWidth style={{ marginTop: Spacing.lg }} />
@@ -632,8 +715,14 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.border,
   },
   headerTitle: { color: Colors.text, fontSize: FontSize.xl, fontWeight: FontWeight.bold },
-  headerLeft: { flexDirection: 'row-reverse', alignItems: 'center', gap: 4 },
+  headerLeft: { flexDirection: 'row-reverse', alignItems: 'center', gap: 6 },
   headerSub: { color: Colors.textSecondary, fontSize: FontSize.sm },
+  shiftBadge: {
+    flexDirection: 'row-reverse', alignItems: 'center', gap: 3,
+    backgroundColor: Colors.success + '22', borderRadius: Radius.sm,
+    paddingHorizontal: 6, paddingVertical: 2,
+  },
+  shiftBadgeText: { color: Colors.success, fontSize: 10, fontWeight: FontWeight.semiBold },
   typeToggle: {
     flexDirection: 'row-reverse', marginHorizontal: Spacing.md, marginVertical: Spacing.sm,
     backgroundColor: Colors.surface, borderRadius: Radius.lg, padding: 4,
@@ -642,7 +731,8 @@ const styles = StyleSheet.create({
   typeBtn: { flex: 1, flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: Spacing.xs, paddingVertical: Spacing.sm, borderRadius: Radius.md },
   typeBtnSale: { backgroundColor: Colors.primary },
   typeBtnPurchase: { backgroundColor: Colors.info },
-  typeBtnText: { color: Colors.textSecondary, fontSize: FontSize.sm, fontWeight: FontWeight.medium },
+  typeBtnReturn: { backgroundColor: Colors.danger },
+  typeBtnText: { color: Colors.textSecondary, fontSize: 12, fontWeight: FontWeight.medium },
   typeBtnTextActive: { color: Colors.white, fontWeight: FontWeight.semiBold },
   body: { flex: 1, flexDirection: 'row-reverse' },
   productsPanel: { flex: 1.2, borderRightWidth: 1, borderRightColor: Colors.border },
@@ -654,21 +744,14 @@ const styles = StyleSheet.create({
   searchIcon: { marginLeft: Spacing.xs },
   scanIconBtn: { padding: Spacing.xs, marginLeft: 2 },
   searchInput: { flex: 1, color: Colors.text, fontSize: FontSize.sm, paddingVertical: Spacing.sm },
-  tipRow: {
-    flexDirection: 'row-reverse', alignItems: 'center', gap: 4,
-    paddingHorizontal: Spacing.sm, paddingBottom: 4,
-  },
+  tipRow: { flexDirection: 'row-reverse', alignItems: 'center', gap: 4, paddingHorizontal: Spacing.sm, paddingBottom: 4 },
   tipText: { color: Colors.info, fontSize: 10 },
   productCard: {
     backgroundColor: Colors.card, borderRadius: Radius.md, padding: Spacing.sm,
     margin: Spacing.xs, borderWidth: 1, borderColor: Colors.border, minHeight: 76,
     alignItems: 'flex-end', position: 'relative',
   },
-  unitBadge: {
-    position: 'absolute', top: 4, left: 4,
-    flexDirection: 'row-reverse', alignItems: 'center', gap: 2,
-    borderRadius: Radius.sm, paddingHorizontal: 5, paddingVertical: 2,
-  },
+  unitBadge: { position: 'absolute', top: 4, left: 4, flexDirection: 'row-reverse', alignItems: 'center', gap: 2, borderRadius: Radius.sm, paddingHorizontal: 5, paddingVertical: 2 },
   unitBadgeText: { fontSize: 9, fontWeight: FontWeight.semiBold },
   productName: { color: Colors.text, fontSize: FontSize.xs + 1, fontWeight: FontWeight.medium, textAlign: 'right', marginBottom: 4 },
   productPrice: { color: Colors.primary, fontSize: FontSize.sm, fontWeight: FontWeight.bold },
@@ -677,85 +760,72 @@ const styles = StyleSheet.create({
   emptyProducts: { alignItems: 'center', padding: Spacing.xl, gap: Spacing.sm },
   emptyText: { color: Colors.textMuted, fontSize: FontSize.sm, textAlign: 'center' },
   cartPanel: { flex: 1, flexDirection: 'column' },
-  cartTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: FontWeight.semiBold, padding: Spacing.md, textAlign: 'right', borderBottomWidth: 1, borderBottomColor: Colors.border },
+  cartHeader: { flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center', padding: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  cartTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: FontWeight.semiBold, textAlign: 'right' },
+  discountBtn: { flexDirection: 'row-reverse', alignItems: 'center', gap: 4, backgroundColor: Colors.warning + '11', borderRadius: Radius.sm, paddingHorizontal: 8, paddingVertical: 4, borderWidth: 1, borderColor: Colors.warning + '33' },
+  discountBtnText: { fontSize: FontSize.xs, fontWeight: FontWeight.semiBold },
   cartList: { flex: 1 },
   emptyCart: { alignItems: 'center', padding: Spacing.xl, gap: Spacing.sm, marginTop: Spacing.xl },
-  cartItem: {
-    flexDirection: 'row-reverse', alignItems: 'center', gap: Spacing.xs,
-    padding: Spacing.sm, borderBottomWidth: 1, borderBottomColor: Colors.border,
-  },
+  cartItem: { flexDirection: 'row-reverse', alignItems: 'center', gap: Spacing.xs, padding: Spacing.sm, borderBottomWidth: 1, borderBottomColor: Colors.border },
   cartInfo: { flex: 1, alignItems: 'flex-end' },
   cartItemName: { color: Colors.text, fontSize: FontSize.xs + 1, textAlign: 'right' },
   cartItemPrice: { color: Colors.primary, fontSize: FontSize.sm, fontWeight: FontWeight.semiBold },
   cartQty: { flexDirection: 'row-reverse', alignItems: 'center', gap: 2 },
   qtyBtn: { backgroundColor: Colors.surface, borderRadius: 4, padding: 4, borderWidth: 1, borderColor: Colors.border },
   qtyNum: { color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.bold, minWidth: 22, textAlign: 'center' },
-  weightQtyBtn: {
-    flexDirection: 'row-reverse', alignItems: 'center', gap: 2,
-    backgroundColor: Colors.warning + '22', borderRadius: Radius.sm,
-    paddingHorizontal: 6, paddingVertical: 4,
-    borderWidth: 1, borderColor: Colors.warning + '44',
-  },
+  weightQtyBtn: { flexDirection: 'row-reverse', alignItems: 'center', gap: 2, backgroundColor: Colors.warning + '22', borderRadius: Radius.sm, paddingHorizontal: 6, paddingVertical: 4, borderWidth: 1, borderColor: Colors.warning + '44' },
   weightQtyText: { color: Colors.warning, fontSize: 11, fontWeight: FontWeight.semiBold },
-  cartFooter: {
-    padding: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border,
-    backgroundColor: Colors.surface, gap: Spacing.sm,
-  },
+  cartFooter: { padding: Spacing.sm, borderTopWidth: 1, borderTopColor: Colors.border, backgroundColor: Colors.surface, gap: 6 },
+  breakdownBox: { backgroundColor: Colors.background, borderRadius: Radius.md, padding: Spacing.sm, gap: 4 },
+  breakdownRow: { flexDirection: 'row-reverse', justifyContent: 'space-between' },
+  breakdownLabel: { color: Colors.textSecondary, fontSize: FontSize.xs },
+  breakdownVal: { color: Colors.text, fontSize: FontSize.xs, fontWeight: FontWeight.semiBold },
   totalRow: { flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center' },
   totalLabel: { color: Colors.textSecondary, fontSize: FontSize.sm },
   totalValue: { color: Colors.primary, fontSize: FontSize.lg, fontWeight: FontWeight.bold },
-  paymentToggle: { flexDirection: 'row-reverse', borderRadius: Radius.md, overflow: 'hidden', borderWidth: 1, borderColor: Colors.border },
-  payBtn: { flex: 1, paddingVertical: Spacing.sm, alignItems: 'center', backgroundColor: Colors.background },
-  payBtnActive: { backgroundColor: Colors.primary },
+  paymentScroll: { flexDirection: 'row-reverse', gap: 4 },
+  payBtn: { paddingVertical: Spacing.sm, paddingHorizontal: Spacing.md, alignItems: 'center', backgroundColor: Colors.background, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border },
+  payBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   payBtnText: { color: Colors.textSecondary, fontSize: FontSize.sm, fontWeight: FontWeight.medium },
   payBtnTextActive: { color: Colors.white },
-  customerPicker: {
-    flexDirection: 'row-reverse', alignItems: 'center', gap: Spacing.sm,
-    backgroundColor: Colors.background, borderRadius: Radius.md, padding: Spacing.sm,
-    borderWidth: 1, borderColor: Colors.primary,
-  },
+  customerPicker: { flexDirection: 'row-reverse', alignItems: 'center', gap: Spacing.sm, backgroundColor: Colors.background, borderRadius: Radius.md, padding: Spacing.sm, borderWidth: 1, borderColor: Colors.primary },
   customerPickerText: { color: Colors.text, fontSize: FontSize.sm, flex: 1, textAlign: 'right' },
   customerPickerPlaceholder: { color: Colors.textMuted },
+  secondPayToggle: { flexDirection: 'row-reverse', alignItems: 'center', gap: 6 },
+  secondPayToggleText: { color: Colors.textSecondary, fontSize: FontSize.xs },
+  secondPayRow: { flexDirection: 'row-reverse', gap: 6, alignItems: 'center' },
+  secondPayInput: { flex: 1, backgroundColor: Colors.background, borderRadius: Radius.md, padding: Spacing.sm, color: Colors.text, fontSize: FontSize.sm, borderWidth: 1, borderColor: Colors.border },
+  secondPayMethodToggle: { flexDirection: 'row-reverse', borderRadius: Radius.sm, overflow: 'hidden', borderWidth: 1, borderColor: Colors.border },
+  secondPayMethodBtn: { paddingHorizontal: Spacing.sm, paddingVertical: 6, backgroundColor: Colors.background },
+  secondPayMethodBtnActive: { backgroundColor: Colors.info },
+  secondPayMethodText: { color: Colors.textSecondary, fontSize: FontSize.xs },
+
+  // Discount modal
+  discountCard: { backgroundColor: Colors.surface, borderRadius: Radius.xl, margin: Spacing.lg, padding: Spacing.xl, borderWidth: 1, borderColor: Colors.border },
+  discountTypeRow: { flexDirection: 'row-reverse', gap: Spacing.sm, marginBottom: Spacing.md },
+  discountTypeBtn: { flex: 1, paddingVertical: Spacing.sm, borderRadius: Radius.md, alignItems: 'center', backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border },
+  discountTypeBtnActive: { backgroundColor: Colors.warning, borderColor: Colors.warning },
+  discountTypeText: { color: Colors.textSecondary, fontSize: FontSize.sm, fontWeight: FontWeight.medium },
+  discountInputRow: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.background, borderRadius: Radius.lg, borderWidth: 2, borderColor: Colors.warning, marginBottom: Spacing.sm, paddingHorizontal: Spacing.md },
+  discountInput: { flex: 1, fontSize: 36, fontWeight: FontWeight.bold, color: Colors.text, paddingVertical: Spacing.md, textAlign: 'center' },
+  discountUnit: { color: Colors.warning, fontSize: FontSize.lg, fontWeight: FontWeight.semiBold },
+  discountPreview: { color: Colors.warning, fontSize: FontSize.sm, textAlign: 'center', marginBottom: Spacing.md, fontWeight: FontWeight.semiBold },
+  discountBtnsRow: { flexDirection: 'row-reverse', gap: Spacing.sm, marginTop: Spacing.sm },
 
   // Weight modal
-  weightModalCard: {
-    backgroundColor: Colors.surface, borderRadius: Radius.xl, margin: Spacing.lg,
-    padding: Spacing.xl, borderWidth: 1, borderColor: Colors.border,
-  },
+  weightModalCard: { backgroundColor: Colors.surface, borderRadius: Radius.xl, margin: Spacing.lg, padding: Spacing.xl, borderWidth: 1, borderColor: Colors.border },
   weightModalHeader: { flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.sm },
-  weightModalIcon: {
-    width: 44, height: 44, borderRadius: 22,
-    backgroundColor: Colors.warning + '22', alignItems: 'center', justifyContent: 'center',
-  },
+  weightModalIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.warning + '22', alignItems: 'center', justifyContent: 'center' },
   weightModalTitle: { color: Colors.text, fontSize: FontSize.xl, fontWeight: FontWeight.bold, textAlign: 'right', marginBottom: 4 },
   weightModalSub: { color: Colors.textSecondary, fontSize: FontSize.sm, textAlign: 'right', marginBottom: Spacing.lg },
-  weightInputWrap: {
-    flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: Colors.background, borderRadius: Radius.lg,
-    borderWidth: 2, borderColor: Colors.warning, marginBottom: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-  },
-  weightInput: {
-    flex: 1, fontSize: 40, fontWeight: FontWeight.bold, color: Colors.text,
-    paddingVertical: Spacing.md, textAlign: 'center',
-  },
-  weightInputUnit: {
-    color: Colors.warning, fontSize: FontSize.lg, fontWeight: FontWeight.semiBold,
-    paddingRight: Spacing.sm,
-  },
-  weightCalc: {
-    flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center',
-    backgroundColor: Colors.background, borderRadius: Radius.md, padding: Spacing.sm,
-    marginBottom: Spacing.sm,
-  },
+  weightInputWrap: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.background, borderRadius: Radius.lg, borderWidth: 2, borderColor: Colors.warning, marginBottom: Spacing.sm, paddingHorizontal: Spacing.md },
+  weightInput: { flex: 1, fontSize: 40, fontWeight: FontWeight.bold, color: Colors.text, paddingVertical: Spacing.md, textAlign: 'center' },
+  weightInputUnit: { color: Colors.warning, fontSize: FontSize.lg, fontWeight: FontWeight.semiBold, paddingRight: Spacing.sm },
+  weightCalc: { flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center', backgroundColor: Colors.background, borderRadius: Radius.md, padding: Spacing.sm, marginBottom: Spacing.sm },
   weightCalcText: { color: Colors.textSecondary, fontSize: FontSize.sm },
   weightCalcTotal: { color: Colors.primary, fontSize: FontSize.lg, fontWeight: FontWeight.bold },
   presets: { flexDirection: 'row-reverse', gap: Spacing.sm, marginBottom: Spacing.sm },
-  presetBtn: {
-    flex: 1, alignItems: 'center', paddingVertical: Spacing.sm,
-    backgroundColor: Colors.card, borderRadius: Radius.md,
-    borderWidth: 1, borderColor: Colors.border,
-  },
+  presetBtn: { flex: 1, alignItems: 'center', paddingVertical: Spacing.sm, backgroundColor: Colors.card, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border },
   presetText: { color: Colors.textSecondary, fontSize: FontSize.sm, fontWeight: FontWeight.medium },
 
   modalOverlay: { flex: 1, backgroundColor: Colors.overlay, justifyContent: 'flex-end' },
@@ -763,38 +833,18 @@ const styles = StyleSheet.create({
   modalHeader: { flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.md },
   modalTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: FontWeight.semiBold },
   modalSearch: { backgroundColor: Colors.background, borderRadius: Radius.md, padding: Spacing.sm, color: Colors.text, marginBottom: Spacing.sm, borderWidth: 1, borderColor: Colors.border },
-  customerRow: {
-    flexDirection: 'row-reverse', alignItems: 'center', gap: Spacing.sm,
-    paddingVertical: Spacing.sm, borderBottomWidth: 1, borderBottomColor: Colors.border,
-  },
+  customerRow: { flexDirection: 'row-reverse', alignItems: 'center', gap: Spacing.sm, paddingVertical: Spacing.sm, borderBottomWidth: 1, borderBottomColor: Colors.border },
   customerInfo: { flex: 1, alignItems: 'flex-end' },
   customerName: { color: Colors.text, fontSize: FontSize.md, fontWeight: FontWeight.medium },
   customerPhone: { color: Colors.textSecondary, fontSize: FontSize.xs },
   customerBalance: { fontSize: FontSize.sm, fontWeight: FontWeight.semiBold },
-  barcodeTag: {
-    flexDirection: 'row-reverse', alignItems: 'center', gap: 6,
-    backgroundColor: Colors.info + '11', borderRadius: Radius.sm,
-    paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs,
-    marginBottom: Spacing.md, borderWidth: 1, borderColor: Colors.info + '33',
-    alignSelf: 'flex-end',
-  },
+  barcodeTag: { flexDirection: 'row-reverse', alignItems: 'center', gap: 6, backgroundColor: Colors.info + '11', borderRadius: Radius.sm, paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs, marginBottom: Spacing.md, borderWidth: 1, borderColor: Colors.info + '33', alignSelf: 'flex-end' },
   barcodeTagText: { color: Colors.info, fontSize: FontSize.sm, fontWeight: FontWeight.semiBold },
-  newProductInput: {
-    backgroundColor: Colors.background, borderRadius: Radius.md, padding: Spacing.md,
-    color: Colors.text, fontSize: FontSize.md, borderWidth: 1, borderColor: Colors.border,
-    marginBottom: Spacing.sm,
-  },
+  newProductInput: { backgroundColor: Colors.background, borderRadius: Radius.md, padding: Spacing.md, color: Colors.text, fontSize: FontSize.md, borderWidth: 1, borderColor: Colors.border, marginBottom: Spacing.sm },
   priceInputRow: { flexDirection: 'row-reverse', gap: Spacing.sm },
-  confirmBtn: {
-    backgroundColor: Colors.primary, borderRadius: Radius.lg, padding: Spacing.md,
-    alignItems: 'center', marginTop: Spacing.sm,
-    flexDirection: 'row-reverse', justifyContent: 'center', gap: Spacing.xs,
-  },
+  confirmBtn: { backgroundColor: Colors.primary, borderRadius: Radius.lg, padding: Spacing.md, alignItems: 'center', marginTop: Spacing.sm, flexDirection: 'row-reverse', justifyContent: 'center', gap: Spacing.xs },
   confirmBtnText: { color: Colors.white, fontSize: FontSize.md, fontWeight: FontWeight.bold },
-  successModal: {
-    backgroundColor: Colors.surface, borderRadius: Radius.xl, padding: Spacing.xl,
-    margin: Spacing.xl, alignItems: 'center', borderWidth: 1, borderColor: Colors.border,
-  },
+  successModal: { backgroundColor: Colors.surface, borderRadius: Radius.xl, padding: Spacing.xl, margin: Spacing.xl, alignItems: 'center', borderWidth: 1, borderColor: Colors.border },
   successIcon: { width: 96, height: 96, borderRadius: 48, backgroundColor: Colors.success + '22', alignItems: 'center', justifyContent: 'center', marginBottom: Spacing.md },
   successTitle: { color: Colors.text, fontSize: FontSize.xxl, fontWeight: FontWeight.bold, marginBottom: Spacing.xs },
   successSub: { color: Colors.textSecondary, fontSize: FontSize.md },
