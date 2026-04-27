@@ -2,10 +2,11 @@
 import React, { useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, KeyboardAvoidingView,
-  Platform, Pressable, Modal, FlatList
+  Platform, Pressable, Modal, FlatList, Image, ActivityIndicator
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 import { useApp } from '@/hooks/useApp';
 import { useAlert } from '@/template';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
@@ -14,6 +15,7 @@ import StyledButton from '@/components/ui/StyledButton';
 import BarcodeScanner from '@/components/ui/BarcodeScanner';
 import { CATEGORIES } from '@/utils/format';
 import { UnitType, WEIGHT_UNITS, PIECE_UNITS } from '@/types';
+import { uploadProductImage } from '@/services/api';
 
 export default function AddProductScreen() {
   const router = useRouter();
@@ -34,12 +36,49 @@ export default function AddProductScreen() {
   const [expireDate, setExpireDate] = useState(existing?.expireDate || '');
   const [unitType, setUnitType] = useState<UnitType>(existing?.unitType || 'piece');
   const [unit, setUnit] = useState(existing?.unit || 'قطعة');
+  const [imageUri, setImageUri] = useState<string | null>(existing?.imageUrl || null);
+  const [imageChanged, setImageChanged] = useState(false);
   const [showUnitModal, setShowUnitModal] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [showScanner, setShowScanner] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const availableUnits = unitType === 'weight' ? WEIGHT_UNITS : PIECE_UNITS;
+
+  async function handlePickImage() {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      showAlert('إذن مطلوب', 'يرجى السماح للتطبيق بالوصول إلى المعرض');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.7,
+    });
+    if (!result.canceled && result.assets[0]) {
+      setImageUri(result.assets[0].uri);
+      setImageChanged(true);
+    }
+  }
+
+  async function handleTakePhoto() {
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) {
+      showAlert('إذن مطلوب', 'يرجى السماح للتطبيق بالوصول إلى الكاميرا');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.7,
+    });
+    if (!result.canceled && result.assets[0]) {
+      setImageUri(result.assets[0].uri);
+      setImageChanged(true);
+    }
+  }
 
   function handleUnitTypeChange(type: UnitType) {
     setUnitType(type);
@@ -58,21 +97,32 @@ export default function AddProductScreen() {
   async function handleSave() {
     const e = validate();
     if (Object.keys(e).length > 0) { setErrors(e); return; }
-    const data = {
-      name: name.trim(),
-      barcode: barcode.trim() || undefined,
-      buyPrice: Number(buyPrice),
-      sellPrice: Number(sellPrice),
-      wholesalePrice: Number(wholesalePrice) || 0,
-      quantity: unitType === 'piece' ? Number(quantity) : 0,
-      minQuantity: unitType === 'piece' ? (Number(minQuantity) || 10) : 0,
-      category,
-      expireDate: expireDate.trim() || undefined,
-      unitType,
-      unit,
-    };
     setSaving(true);
     try {
+      let finalImageUrl = existing?.imageUrl || undefined;
+
+      const productId = existing?.id || `${Date.now()}`;
+
+      if (imageChanged && imageUri) {
+        const ext = imageUri.split('.').pop()?.toLowerCase() || 'jpg';
+        finalImageUrl = await uploadProductImage(productId, imageUri, ext);
+      }
+
+      const data = {
+        name: name.trim(),
+        barcode: barcode.trim() || undefined,
+        buyPrice: Number(buyPrice),
+        sellPrice: Number(sellPrice),
+        wholesalePrice: Number(wholesalePrice) || 0,
+        quantity: unitType === 'piece' ? Number(quantity) : 0,
+        minQuantity: unitType === 'piece' ? (Number(minQuantity) || 10) : 0,
+        category,
+        expireDate: expireDate.trim() || undefined,
+        unitType,
+        unit,
+        imageUrl: finalImageUrl,
+      };
+
       if (existing) {
         await updateProduct(existing.id, data);
         showAlert('تم', 'تم تعديل المنتج بنجاح');
@@ -91,6 +141,33 @@ export default function AddProductScreen() {
   return (
     <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+
+        {/* Product Image */}
+        <Text style={styles.label}>صورة المنتج (اختياري)</Text>
+        <View style={styles.imageSection}>
+          <View style={styles.imagePreview}>
+            {imageUri ? (
+              <>
+                <Image source={{ uri: imageUri }} style={styles.productImage} resizeMode="cover" />
+                <Pressable style={styles.removeImageBtn} onPress={() => { setImageUri(null); setImageChanged(true); }}>
+                  <MaterialIcons name="close" size={14} color={Colors.white} />
+                </Pressable>
+              </>
+            ) : (
+              <MaterialIcons name="image" size={36} color={Colors.textMuted} />
+            )}
+          </View>
+          <View style={styles.imageActions}>
+            <Pressable style={styles.imageBtn} onPress={handlePickImage}>
+              <MaterialIcons name="photo-library" size={18} color={Colors.primary} />
+              <Text style={styles.imageBtnText}>من المعرض</Text>
+            </Pressable>
+            <Pressable style={styles.imageBtn} onPress={handleTakePhoto}>
+              <MaterialIcons name="camera-alt" size={18} color={Colors.info} />
+              <Text style={[styles.imageBtnText, { color: Colors.info }]}>التقاط صورة</Text>
+            </Pressable>
+          </View>
+        </View>
 
         <StyledInput
           label="اسم المنتج *"
@@ -281,6 +358,14 @@ export default function AddProductScreen() {
         </View>
       </ScrollView>
 
+      {/* Saving overlay */}
+      {saving ? (
+        <View style={styles.savingOverlay}>
+          <ActivityIndicator size="large" color={Colors.primary} />
+          <Text style={styles.savingText}>جاري الحفظ{imageChanged && imageUri ? ' ورفع الصورة...' : '...'}</Text>
+        </View>
+      ) : null}
+
       {/* Unit Picker Modal */}
       <Modal visible={showUnitModal} transparent animationType="slide">
         <View style={styles.modalOverlay}>
@@ -401,4 +486,32 @@ const styles = StyleSheet.create({
   },
   unitOptionActive: { backgroundColor: Colors.primary + '11', borderRadius: Radius.sm, paddingHorizontal: Spacing.sm },
   unitOptionText: { color: Colors.text, fontSize: FontSize.md },
+
+  imageSection: { flexDirection: 'row-reverse', gap: Spacing.md, marginBottom: Spacing.md, alignItems: 'center' },
+  imagePreview: {
+    width: 90, height: 90, borderRadius: Radius.lg, backgroundColor: Colors.surface,
+    borderWidth: 1, borderColor: Colors.border, alignItems: 'center', justifyContent: 'center',
+    overflow: 'hidden', position: 'relative',
+  },
+  productImage: { width: 90, height: 90 },
+  removeImageBtn: {
+    position: 'absolute', top: 4, left: 4,
+    backgroundColor: Colors.danger, borderRadius: 10, width: 20, height: 20,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  imageActions: { flex: 1, gap: Spacing.sm },
+  imageBtn: {
+    flexDirection: 'row-reverse', alignItems: 'center', gap: Spacing.xs,
+    backgroundColor: Colors.surface, borderRadius: Radius.md, padding: Spacing.sm + 2,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  imageBtnText: { color: Colors.primary, fontSize: FontSize.sm, fontWeight: FontWeight.medium },
+
+  savingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: Colors.overlay,
+    alignItems: 'center', justifyContent: 'center', gap: Spacing.md,
+    zIndex: 100,
+  },
+  savingText: { color: Colors.white, fontSize: FontSize.md, fontWeight: FontWeight.medium },
 });
